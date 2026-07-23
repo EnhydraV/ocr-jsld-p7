@@ -92,7 +92,7 @@ processus lancé en root, et front servi par `vite preview` (outil de prévisual
 
 1. `prisma generate` doit être exécuté dans l'image finale (le client généré dépend de la plateforme - musl sur
    alpine) ;
-2. les migrations doivent être **versionnées** (`prisma/migrations/` est actuellement gitignoré, à corriger) et
+2. les migrations doivent être **versionnées** (le starter les excluait du versionnement via `.gitignore`) et
    appliquées au démarrage du conteneur via `prisma migrate deploy` dans l'entrypoint - sans cela, un conteneur neuf
    démarre sans base ;
 3. le fichier SQLite doit vivre **hors de l'image**, dans un volume (`DATABASE_URL=file:/app/data/orion.db`), sinon les
@@ -149,7 +149,8 @@ contradiction avec l'exigence d'un lancement direct.
 ## 4. Plan de testing périodique
 
 **État initial** : le starter ne contient qu'un test placeholder par module (`expect(true).toBe(true)`) ; la couverture
-réelle est donc nulle. Le plan ci-dessous définit la cible que le pipeline met en œuvre.
+réelle est donc nulle. Le plan ci-dessous définit la cible que le pipeline met en œuvre ; le déroulé effectif de la
+mise en place est décrit au § 2.
 
 ### 4.1 Types de tests automatisés
 
@@ -158,7 +159,7 @@ réelle est donc nulle. Le plan ci-dessous définit la cible que le pipeline met
 | Analyse statique          | back + front                                                                            | ESLint, `tsc --noEmit`                  | Erreurs de typage et violations de règles avant même d'exécuter le code                                                              |
 | Tests unitaires back      | services, repositories, validation Zod                                                  | Vitest (+ mock Prisma)                  | Logique métier isolée : chaque couche testée sans base de données réelle                                                             |
 | Tests d'intégration back  | routes Express de bout en bout                                                          | Vitest + Supertest, base SQLite jetable | Contrats de l'API (statuts HTTP, corps de réponse, erreurs de validation) sur une vraie chaîne route > controller > service > Prisma |
-| Tests de composants front | composants, hooks, services d'appel API                                                 | Vitest + Testing Library (jsdom)        | Rendu et comportement des composants React, hooks TanStack Query mockés                                                              |
+| Tests de composants front | composants, hooks, services d'appel API                                                 | Vitest + Testing Library (jsdom)        | Rendu et comportement des composants React et des hooks TanStack Query, couche d'appel API (axios) mockée                                                              |
 | Tests e2e navigateur      | smoke : parcours critiques (dashboard, CRUD contact) *(PR)* ; suite étendue *(nightly)* | Playwright (Chromium)                   | Le comportement réel vu de l'utilisateur : front, API et base réunis, dans un vrai navigateur                                        |
 | Smoke test conteneurisé   | application complète                                                                    | `docker compose up` en CI + `curl`      | L'application démarre réellement en conteneurs : `/api/health` répond 200, le front sert sa page                                     |
 | Analyse qualité/sécurité  | tout le code                                                                            | SonarQube Cloud                         | Bugs, vulnérabilités, code smells, duplication, couverture (voir § 5)                                                                |
@@ -176,7 +177,7 @@ en CI, et tout test devenu instable est déplacé vers la suite nightly le temps
 
 | Déclencheur                   | Tests exécutés                                                                                                                     | Rôle                                                                                                                                                                                                                                                                                                                                        |
 |-------------------------------|------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Push** (toute branche)      | Lint + typecheck + tests unitaires et d'intégration avec couverture                                                                | Feedback rapide au développeur à chaque commit poussé                                                                                                                                                                                                                                                                                       |
+| **Push** (toute branche)      | Lint + typecheck + tests unitaires, d'intégration et de composants avec couverture + build back et front                                                                | Feedback rapide au développeur à chaque commit poussé                                                                                                                                                                                                                                                                                       |
 | **Pull request** vers `main`  | Idem push + analyse SonarQube (quality gate) + build des images Docker + smoke test compose + smoke e2e Playwright sur cette stack | Exécutée **dès l'ouverture de la PR** puis à chaque mise à jour de la branche : feedback immédiat pour l'auteur, et le reviewer ne relit que des PR déjà vertes. La protection de branche (*required status checks* + *require branches up to date*) exige ces mêmes résultats, revalidés contre le `main` courant, pour autoriser le merge |
 | **Nightly** (cron quotidien)  | Suite complète + suite e2e étendue + `npm audit`                                                                                   | Détecter les régressions *sans commit* : nouvelle CVE publiée, dérive d'une dépendance, panne d'un service externe (Sonar). Un pipeline vert hier peut être rouge aujourd'hui. Les e2e longs ou en cours de fiabilisation s'exécutent ici (déclenchement manuel possible avant release)                                                     |
 | **Release / push sur `main`** | Suite complète + publication des images GHCR                                                                                       | Seul un état intégralement validé est promu en artefact déployable                                                                                                                                                                                                                                                                          |
@@ -186,8 +187,9 @@ en CI, et tout test devenu instable est déplacé vers la suite nightly le temps
 - **Non-régression** : toute modification (fix, feature, montée de dépendance) est confrontée aux comportements
   existants avant d'atteindre `main` ; c'est la condition pour déployer fréquemment sans peur (métriques DORA, § 6).
 - **Qualité** : critères de réussite explicites et bloquants - tests verts obligatoires, couverture ≥ 80 % sur le
-  périmètre métier du back (services, repositories, validation), quality gate SonarQube au vert. Un échec bloque le
-  merge (branche `main` protégée).
+  périmètre métier du back (services, repositories, validation - seuil appliqué par les *thresholds* Vitest, qui font
+  échouer le job de tests sous 80 %), quality gate SonarQube au vert. Un échec bloque le merge (branche `main`
+  protégée).
 - **Déployabilité** : le smoke test conteneurisé garantit que ce qui est publié démarre réellement - on ne teste pas
   seulement le code, mais l'artefact déployé, dans les conditions du déploiement.
 - **Alerte** : tout échec de la CI (y compris nightly) notifie l'équipe via GitHub (email/interface) ; le nightly en
@@ -244,11 +246,17 @@ l'injection et le mass-assignment).
 
 **Actions immédiates** (intégrées à la mise en place du pipeline) :
 
+- mettre à jour sans délai les dépendances vulnérables détectées par `npm audit` (politique de mise à jour et premier
+  cas concret au § 8.1) ;
 - corriger le middleware d'erreurs (signature à 4 paramètres, réponse JSON générique sans stack trace) ;
 - restreindre CORS à une origine configurée par variable d'environnement ;
 - ajouter helmet (en-têtes de sécurité HTTP) côté Express ;
 - durcir la conteneurisation : non-root, multi-stage, `.dockerignore`, secrets hors images (§ 3) ;
 - brancher SonarQube Cloud avec quality gate bloquant et secrets GitHub.
+
+Les trois corrections applicatives (error handler, CORS, helmet) sont volontairement appliquées **après** la première
+analyse SonarQube : le constat est ainsi documenté avant/après (captures § 5.1), preuve que le pipeline détecte puis
+valide la remédiation.
 
 **Actions à court terme** (itérations suivantes) :
 
@@ -319,6 +327,11 @@ l'injection et le mass-assignment).
 - Dépendances npm
 - Mises à jour React / Node.js
 - Mises à jour Docker (images)
+
+Premier cas concret à intégrer à la rédaction de cette section : dès la mise en place de la CI, `npm audit` a révélé
+2 vulnérabilités critiques et 1 haute dans la chaîne de test Vitest 2.x ; montée en version majeure (Vitest 4) validée
+par les suites de tests avant le premier run du pipeline - illustration du cycle détection (audit nightly, § 4.2) >
+mise à jour > validation par les tests.
 
 ### 8.2 Mise à jour du pipeline CI/CD
 
