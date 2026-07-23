@@ -4,6 +4,10 @@ ARG NODE_VERSION=22-alpine
 # --- Étage builder : compilation TypeScript ---
 FROM node:${NODE_VERSION} AS builder
 
+# Requis par Prisma pour détecter la variante de moteur (linux-musl-openssl-3.0.x) ;
+# sans lui, il retombe sur les moteurs openssl-1.1 incompatibles avec alpine
+RUN apk add --no-cache openssl
+
 WORKDIR /app
 
 COPY package.json package-lock.json ./
@@ -19,6 +23,9 @@ RUN npm run build
 # --- Étage final : dépendances de production uniquement ---
 FROM node:${NODE_VERSION} AS runner
 
+# Même exigence qu'au build : détection OpenSSL 3 par Prisma au runtime
+RUN apk add --no-cache openssl
+
 ENV NODE_ENV=production
 
 WORKDIR /app
@@ -29,6 +36,10 @@ RUN npm ci --omit=dev
 COPY prisma ./prisma
 # Régénéré dans l'image finale : le moteur Prisma dépend de la plateforme (musl/alpine)
 RUN npx prisma generate
+# Force le téléchargement de tous les moteurs (dont le schema engine utilisé par
+# migrate deploy) pendant le build, en root : à l'exécution, l'utilisateur non-root
+# ne peut — et ne doit — rien écrire dans node_modules
+RUN npx prisma version >/dev/null
 
 COPY --from=builder /app/dist ./dist
 COPY docker-entrypoint.sh ./

@@ -91,7 +91,8 @@ processus lancé en root, et front servi par `vite preview` (outil de prévisual
 **Spécificités Prisma/SQLite (back).** Trois contraintes structurent le Dockerfile back :
 
 1. `prisma generate` doit être exécuté dans l'image finale (le client généré dépend de la plateforme - musl sur
-   alpine) ;
+   alpine), et l'image doit embarquer le paquet `openssl` : sans lui, Prisma ne détecte pas OpenSSL 3 et télécharge
+   des moteurs `openssl-1.1` incompatibles avec alpine ;
 2. les migrations doivent être **versionnées** (le starter les excluait du versionnement via `.gitignore`) et
    appliquées au démarrage du conteneur via `prisma migrate deploy` dans l'entrypoint - sans cela, un conteneur neuf
    démarre sans base ;
