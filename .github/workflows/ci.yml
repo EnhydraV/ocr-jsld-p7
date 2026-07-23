@@ -1,0 +1,132 @@
+name: CI
+
+# Matrice des déclencheurs : cf. DOCUMENTATION.md §4.2
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Nightly : détecte les régressions sans commit (nouvelle CVE, dérive de dépendance)
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+# Le GITHUB_TOKEN n'a que le droit de lire le dépôt (moindre privilège)
+permissions:
+  contents: read
+
+# Un nouveau push annule les runs devenus obsolètes sur la même branche
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  server:
+    name: Back — lint, typecheck, tests, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Installer les dépendances
+        run: npm ci
+      - name: Générer le client Prisma
+        run: npm run prisma:generate
+      - name: Lint
+        run: npm run lint
+      - name: Vérification des types
+        run: npm run typecheck
+      - name: Tests unitaires et d'intégration (couverture)
+        run: npm run test:coverage
+      - name: Build (TypeScript > dist/)
+        run: npm run build
+      - name: Publier le rapport de couverture
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-coverage
+          path: server/coverage/lcov.info
+
+  client:
+    name: Front — lint, typecheck, tests, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Installer les dépendances
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Vérification des types
+        run: npm run typecheck
+      - name: Tests de composants (couverture)
+        run: npm run test:coverage
+      - name: Build (Vite > dist/)
+        run: npm run build
+      - name: Publier le rapport de couverture
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: client-coverage
+          path: client/coverage/lcov.info
+
+  sonar:
+    name: Analyse SonarQube Cloud
+    # Quality gate exigée sur les PR et sur main ; inutile sur les branches sans PR
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: [server, client]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Historique complet requis par Sonar (attribution du new code)
+          fetch-depth: 0
+      - name: Récupérer la couverture back
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: server-coverage
+          path: server/coverage
+      - name: Récupérer la couverture front
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: client-coverage
+          path: client/coverage
+      - name: Analyse et quality gate
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          # Le job échoue si la quality gate est rouge : check bloquant côté PR
+          args: -Dsonar.qualitygate.wait=true
+
+  audit:
+    name: Audit des dépendances (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Audit back
+        working-directory: server
+        run: npm audit --audit-level=high
+      - name: Audit front
+        working-directory: client
+        run: npm audit --audit-level=high
