@@ -1,7 +1,6 @@
-import { PrismaClient, Organization } from '@prisma/client';
+import { Organization } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { CreateOrganizationInput, UpdateOrganizationInput } from '../models/organizationModel';
-
-const prisma = new PrismaClient();
 
 export const organizationRepository = {
   async findAll(): Promise<Organization[]> {

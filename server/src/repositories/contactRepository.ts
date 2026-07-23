@@ -1,7 +1,6 @@
-import { PrismaClient, Contact } from '@prisma/client';
+import { Contact } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { CreateContactInput, UpdateContactInput } from '../models/contactModel';
-
-const prisma = new PrismaClient();
 
 export const contactRepository = {
   async findAll(): Promise<Contact[]> {
