@@ -165,6 +165,7 @@ mise en place est décrit au § 2.
 | Smoke test conteneurisé   | application complète                                                                    | `docker compose up` en CI + `curl`      | L'application démarre réellement en conteneurs : `/api/health` répond 200, le front sert sa page                                     |
 | Analyse qualité/sécurité  | tout le code                                                                            | SonarQube Cloud                         | Bugs, vulnérabilités, code smells, duplication, couverture (voir § 5)                                                                |
 | Audit de dépendances      | back + front                                                                            | `npm audit`                             | Vulnérabilités connues (CVE) dans les dépendances                                                                                    |
+| Scan d'images conteneur   | images `server` et `client` construites en CI                                           | Trivy                                   | Vulnérabilités (CVE) des couches des images (OS alpine, paquets système), seuil bloquant HIGH/CRITICAL corrigeables                  |
 
 Les tests unitaires et d'intégration produisent un rapport de couverture **lcov** (provider v8), transmis à SonarQube.
 Les tests e2e Playwright sont découpés en deux niveaux. Le **smoke e2e** (parcours critiques) s'exécute **en PR**, car
@@ -179,8 +180,8 @@ en CI, et tout test devenu instable est déplacé vers la suite nightly le temps
 | Déclencheur                   | Tests exécutés                                                                                                                     | Rôle                                                                                                                                                                                                                                                                                                                                        |
 |-------------------------------|------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Push** (toute branche)      | Lint + typecheck + tests unitaires, d'intégration et de composants avec couverture + build back et front                                                                | Feedback rapide au développeur à chaque commit poussé                                                                                                                                                                                                                                                                                       |
-| **Pull request** vers `main`  | Idem push + analyse SonarQube (quality gate) + build des images Docker + smoke test compose + smoke e2e Playwright sur cette stack | Exécutée **dès l'ouverture de la PR** puis à chaque mise à jour de la branche : feedback immédiat pour l'auteur, et le reviewer ne relit que des PR déjà vertes. La protection de branche (*required status checks* + *require branches up to date*) exige ces mêmes résultats, revalidés contre le `main` courant, pour autoriser le merge |
-| **Nightly** (cron quotidien)  | Suite complète + suite e2e étendue + `npm audit`                                                                                   | Détecter les régressions *sans commit* : nouvelle CVE publiée, dérive d'une dépendance, panne d'un service externe (Sonar). Un pipeline vert hier peut être rouge aujourd'hui. Les e2e longs ou en cours de fiabilisation s'exécutent ici (déclenchement manuel possible avant release)                                                     |
+| **Pull request** vers `main`  | Idem push + analyse SonarQube (quality gate) + build des images Docker + smoke test compose + scan Trivy des images + smoke e2e Playwright sur cette stack | Exécutée **dès l'ouverture de la PR** puis à chaque mise à jour de la branche : feedback immédiat pour l'auteur, et le reviewer ne relit que des PR déjà vertes. La protection de branche (*required status checks* + *require branches up to date*) exige ces mêmes résultats, revalidés contre le `main` courant, pour autoriser le merge |
+| **Nightly** (cron quotidien)  | Suite complète + suite e2e étendue + `npm audit` + scan Trivy des images                                                           | Détecter les régressions *sans commit* : nouvelle CVE publiée, dérive d'une dépendance, panne d'un service externe (Sonar). Un pipeline vert hier peut être rouge aujourd'hui. Les e2e longs ou en cours de fiabilisation s'exécutent ici (déclenchement manuel possible avant release)                                                     |
 | **Release / push sur `main`** | Suite complète + publication des images GHCR                                                                                       | Seul un état intégralement validé est promu en artefact déployable                                                                                                                                                                                                                                                                          |
 
 ### 4.3 Objectifs des tests
@@ -240,7 +241,7 @@ l'injection et le mass-assignment).
 | Secret exposé en clair (token Sonar, `.env` commité) | Secrets GitHub Actions exclusivement ; `.env`, `*.db` gitignorés ; aucun secret dans les images (`.dockerignore`)      |
 | Dépendance vulnérable (CVE)                          | `npm audit` en nightly + Dependabot (alertes et PR de mise à jour, § 8)                                                |
 | Action GitHub compromise (supply chain)              | Actions épinglées par SHA de commit, pas seulement par tag ; permissions du `GITHUB_TOKEN` réduites au minimum par job |
-| Image de base vulnérable                             | Images officielles minimales (alpine), reconstruites régulièrement (§ 8) ; scan d'images possible en extension (Trivy) |
+| Image de base vulnérable                             | Images officielles minimales (alpine), reconstruites régulièrement (§ 8) ; scan Trivy en CI (PR + nightly), bloquant   |
 | Conteneur exécuté en root                            | Utilisateurs non-root dans les deux images (§ 3.1)                                                                     |
 
 ### 5.3 Plan d'action / Remédiation
@@ -256,7 +257,10 @@ l'injection et le mass-assignment).
   directement) ;
 - ajouter helmet (en-têtes de sécurité HTTP) côté Express ;
 - durcir la conteneurisation : non-root, multi-stage, `.dockerignore`, secrets hors images (§ 3) ;
-- brancher SonarQube Cloud avec quality gate bloquant et secrets GitHub.
+- brancher SonarQube Cloud avec quality gate bloquant et secrets GitHub ;
+- scanner les images Docker dans la CI avec **Trivy** (seuil bloquant HIGH/CRITICAL corrigeables), retenu à la place du
+  Twistlock cité par le brief : produit commercial nécessitant une console sous licence, là où Trivy rend le même
+  service de scan en open source.
 
 Les trois corrections applicatives (error handler, CORS, helmet) sont volontairement appliquées **après** la première
 analyse SonarQube : le constat est ainsi documenté avant/après (captures § 5.1), preuve que le pipeline détecte puis
@@ -274,7 +278,6 @@ valide la remédiation.
 
 - mettre en place une authentification (JWT + bcrypt, patterns éprouvés sur les projets précédents) et un contrôle
   d'accès par rôle (technique/commercial) - indispensable si l'application dépasse le réseau interne ;
-- intégrer un scan de vulnérabilités des images Docker (Trivy) dans la CI ;
 - planifier la rotation des secrets et les montées de versions majeures (Node, React, Express) selon le plan de mise à
   jour (§ 8).
 

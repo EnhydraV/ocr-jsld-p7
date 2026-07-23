@@ -5,6 +5,7 @@ name: orion
 services:
   server:
     container_name: orion-server
+    image: orion-server
     build: ./server
     ports:
       - "8080:8080"
@@ -16,6 +17,7 @@ services:
 
   client:
     container_name: orion-client
+    image: orion-client
     build: ./client
     ports:
       # nginx-unprivileged écoute sur 8080 (port non privilégié), exposé en 4200

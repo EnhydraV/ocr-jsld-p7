@@ -115,6 +115,48 @@ jobs:
           # Le job échoue si la quality gate est rouge : check bloquant côté PR
           args: -Dsonar.qualitygate.wait=true
 
+  docker:
+    name: Images Docker — build, smoke test, scan Trivy
+    # PR, main, nightly et déclenchement manuel ; inutile sur un simple push de branche
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build des images
+        run: docker compose build
+      - name: Smoke test — démarrage de la stack complète
+        # --wait échoue si un healthcheck ne passe pas au vert
+        run: docker compose up -d --wait --wait-timeout 120
+      - name: Smoke test — endpoints
+        run: |
+          curl -fsS http://localhost:8080/api/health
+          # À travers le reverse proxy nginx du front
+          curl -fsS http://localhost:4200/api/health
+          # Le front sert bien sa page
+          curl -fsS http://localhost:4200/ | grep -q '<div id="root">'
+      - name: Logs de la stack (diagnostic)
+        if: failure()
+        run: docker compose logs
+      - name: Arrêt de la stack
+        if: always()
+        run: docker compose down -v
+      - name: Scan Trivy — image server
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: orion-server
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          # Ne bloque que sur les CVE corrigeables (les CVE sans correctif éditeur
+          # rendraient le job rouge en permanence sans action possible)
+          ignore-unfixed: true
+      - name: Scan Trivy — image client
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: orion-client
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+
   audit:
     name: Audit des dépendances (nightly)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
