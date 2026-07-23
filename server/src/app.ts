@@ -1,5 +1,4 @@
 import express, { Application, Request, Response } from 'express';
-import cors from 'cors';
 import dotenv from 'dotenv';
 import organizationRoutes from './routes/organizationRoutes';
 import contactRoutes from './routes/contactRoutes';
@@ -9,9 +8,13 @@ dotenv.config();
 // L'app est construite ici sans être démarrée : les tests d'intégration
 // (Supertest) l'importent directement, index.ts se charge du listen().
 const app: Application = express();
+app.disable('x-powered-by');
+
+// Pas de middleware CORS : le front passe par le reverse proxy nginx (prod)
+// ou le proxy Vite (dev), donc même origine — aucune requête cross-origin
+// n'est légitime. Sans en-têtes CORS, le navigateur les bloque toutes.
 
 // Middleware
-app.use(cors());
 app.use(express.json());
 
 // Routes

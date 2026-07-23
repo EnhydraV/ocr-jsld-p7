@@ -19,3 +19,15 @@ describe('unknown routes', () => {
     expect(response.body).toEqual({ error: 'Route not found' });
   });
 });
+
+describe('CORS policy', () => {
+  // Garde-fou de non-régression (Sonar S5122) : l'API ne doit émettre aucun
+  // en-tête CORS, toute requête cross-origin est donc bloquée par le navigateur
+  it('does not allow any cross-origin request', async () => {
+    const response = await request(app)
+      .get('/api/health')
+      .set('Origin', 'https://evil.example.com');
+
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+  });
+});
