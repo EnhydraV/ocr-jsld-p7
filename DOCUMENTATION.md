@@ -249,7 +249,10 @@ l'injection et le mass-assignment).
 - mettre à jour sans délai les dépendances vulnérables détectées par `npm audit` (politique de mise à jour et premier
   cas concret au § 8.1) ;
 - corriger le middleware d'erreurs (signature à 4 paramètres, réponse JSON générique sans stack trace) ;
-- restreindre CORS à une origine configurée par variable d'environnement ;
+- supprimer le middleware CORS du starter : avec le reverse proxy (§ 3.1), front et API partagent la même origine et
+  aucune requête cross-origin n'est légitime - l'absence totale d'en-têtes CORS est la politique la plus restrictive
+  (une allowlist explicite ne serait réintroduite que si un autre client navigateur devait un jour consommer l'API
+  directement) ;
 - ajouter helmet (en-têtes de sécurité HTTP) côté Express ;
 - durcir la conteneurisation : non-root, multi-stage, `.dockerignore`, secrets hors images (§ 3) ;
 - brancher SonarQube Cloud avec quality gate bloquant et secrets GitHub.

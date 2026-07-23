@@ -1,0 +1,11 @@
+# Dépendances et sorties de build (reconstruites dans l'image)
+node_modules
+dist
+coverage
+
+# Secrets : ne doivent jamais entrer dans l'image
+.env*
+
+# Divers
+Dockerfile
+.dockerignore

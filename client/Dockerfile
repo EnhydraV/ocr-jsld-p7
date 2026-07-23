@@ -1,22 +1,28 @@
-# Basic Dockerfile for frontend
-# Note: This is a basic version. Students should optimize it with:
-# - Multi-stage builds (build stage + nginx serve stage)
-# - Smaller base images (alpine)
-# - Security best practices
-# - Static file serving optimization
+# Front React/Vite servi par nginx — multi-stage, cf. DOCUMENTATION.md §3.1
+ARG NODE_VERSION=22-alpine
+ARG NGINX_VERSION=alpine
 
-FROM node:22
+# --- Étage builder : build Vite dans /app/dist ---
+FROM node:${NODE_VERSION} AS builder
 
 WORKDIR /app
 
-COPY package*.json ./
-
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
-
 RUN npm run build
 
-EXPOSE 4200
+# --- Étage final : nginx non-root (NGINX Inc., port non privilégié 8080) ---
+FROM nginxinc/nginx-unprivileged:${NGINX_VERSION} AS runner
 
-CMD ["npm", "run", "preview"]
+# Server block : statiques SPA + reverse proxy /api > server:8080
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --chown=nginx:nginx --from=builder /app/dist /usr/share/nginx/html
+
+USER nginx
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -q -O /dev/null http://localhost:8080/ || exit 1

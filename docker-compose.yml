@@ -1,0 +1,34 @@
+# Stack Orion CRM — cf. DOCUMENTATION.md §3.2
+# Lancement : docker compose up --build  |  front sur :4200, API sur :8080
+name: orion
+
+services:
+  server:
+    build: ./server
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persistance de la base SQLite (survit aux recréations ; détruit par down -v)
+      - orion-db:/app/data
+    networks:
+      - orion
+
+  client:
+    build: ./client
+    ports:
+      # nginx-unprivileged écoute sur 8080 (port non privilégié), exposé en 4200
+      - "4200:8080"
+    depends_on:
+      # Le front n'est démarré que lorsque le healthcheck du back est vert
+      server:
+        condition: service_healthy
+    networks:
+      - orion
+
+volumes:
+  orion-db:
+
+networks:
+  # Nom stable
+  orion:
+    name: orion
