@@ -41,6 +41,12 @@ RUN npx prisma generate
 # ne peut — et ne doit — rien écrire dans node_modules
 RUN npx prisma version >/dev/null
 
+# Un runtime n'installe pas de paquets : suppression de npm/npx/yarn de l'image
+# finale (surface d'attaque, et leurs dépendances internes portent des CVE
+# relevées par Trivy — tar, sigstore… — sans rapport avec l'application)
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+    /opt/yarn* /usr/local/bin/yarn /usr/local/bin/yarnpkg
+
 COPY --from=builder /app/dist ./dist
 COPY docker-entrypoint.sh ./
 
