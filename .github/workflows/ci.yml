@@ -157,6 +157,48 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
 
+  release:
+    name: Release SemVer (semantic-release)
+    # Uniquement depuis un push sur main intégralement validé par le reste de la CI
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [server, client, sonar, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      # Nécessaire pour pousser le tag et créer la release GitHub
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Historique complet requis : semantic-release analyse les commits
+          # depuis la dernière release pour déduire le niveau de version
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+      - name: Build back (artefact de release)
+        working-directory: server
+        run: |
+          npm ci
+          npm run prisma:generate
+          npm run build
+      - name: Build front (artefact de release)
+        working-directory: client
+        run: |
+          npm ci
+          npm run build
+      - name: Empaqueter les artefacts
+        run: |
+          tar -czf orion-server-dist.tar.gz -C server dist prisma package.json package-lock.json
+          tar -czf orion-client-dist.tar.gz -C client dist
+      - name: semantic-release (tag + release GitHub si commits éligibles)
+        uses: cycjimmy/semantic-release-action@b12c8f6015dc215fe37bc154d4ad456dd3833c90 # v6.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   audit:
     name: Audit des dépendances (nightly)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

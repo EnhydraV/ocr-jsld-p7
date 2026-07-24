@@ -148,15 +148,17 @@ contradiction avec l'exigence d'un lancement direct.
 - **Retour arrière** : le tag par SHA permet de redémarrer explicitement l'image du commit précédent en cas de problème
   (voir aussi plan de sauvegarde § 7 pour les données).
 
-**Releases versionnées (SemVer).** En complément du flux continu, les releases sont marqués par un tag
-git **`vX.Y.Z`** (conforme aux règles SemVer strictes : MAJOR = rupture d'API ou de schéma de données, MINOR =
-fonctionnalité rétrocompatible, PATCH = correctif) ; le tag git est la référence de version. Procédure : le tag est posé
-sur un commit de `main` déjà validé par la CI ; son push déclenche le workflow `release.yml`, qui vérifie le format du
-tag (garde-fou SemVer strict, échec sinon), reconstruit les deux modules, et publie une **release GitHub** avec les
-artefacts (`orion-server-vX.Y.Z.tar.gz` :
-build Node + schéma/migrations Prisma ; `orion-client-vX.Y.Z.tar.gz` : dist React) et des notes générées depuis
-l'historique des commits/PR. Les tags ne redéclenchent pas la CI de branche (filtre `branches`) : la validation est
-celle du run CI du commit taggé.
+**Releases versionnées (SemVer).** En complément du flux continu, les releases sont marquées par un tag git
+**`vX.Y.Z`** (SemVer strict : MAJOR = rupture d'API ou de schéma de données, MINOR = fonctionnalité rétrocompatible,
+PATCH = correctif) ; le tag git est la référence de version. Le versioning est **automatisé par semantic-release**,
+adossé à la convention *conventional commits* déjà appliquée sur le dépôt : à chaque push sur `main` **intégralement
+validé par la CI** (le job release dépend de tous les autres - tests, quality gate SonarQube, smoke test conteneurisé,
+scan Trivy), l'historique depuis la dernière release est analysé - `feat:` > MINOR, `fix:`/`perf:` > PATCH,
+`BREAKING CHANGE` > MAJOR ; les types neutres (`docs:`, `ci:`, `test:`, `chore:`) ne déclenchent aucune release.
+Le workflow pose alors le tag, et publie une **release GitHub** avec notes générées depuis les commits et artefacts
+(`orion-server-dist.tar.gz` : build Node + schéma/migrations Prisma ; `orion-client-dist.tar.gz` : dist React).
+L'arbitrage MAJOR/MINOR/PATCH est ainsi encodé dans les messages de commit au moment où le changement est écrit -
+la qualité des messages devient une exigence de production, vérifiable en revue de PR.
 
 ## 4. Plan de testing périodique
 

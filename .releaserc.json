@@ -1,0 +1,19 @@
+{
+  "branches": ["main"],
+  "tagFormat": "v${version}",
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "orion-server-dist.tar.gz", "label": "Back - build Node + schéma/migrations Prisma" },
+          { "path": "orion-client-dist.tar.gz", "label": "Front - dist React" }
+        ],
+        "successComment": false,
+        "failComment": false
+      }
+    ]
+  ]
+}
