@@ -90,12 +90,12 @@ processus lancé en root, et front servi par `vite preview` (outil de prévisual
 
 **Spécificités Prisma/SQLite (back).** Trois contraintes structurent le Dockerfile back :
 
-1. `prisma generate` doit être exécuté dans l'image finale (le client généré dépend de la plateforme - musl sur
-   alpine), et l'image doit embarquer le paquet `openssl` : sans lui, Prisma ne détecte pas OpenSSL 3 et télécharge
-   des moteurs `openssl-1.1` incompatibles avec alpine ;
-2. les migrations doivent être **versionnées** (le starter les excluait du versionnement via `.gitignore`) et
-   appliquées au démarrage du conteneur via `prisma migrate deploy` dans l'entrypoint - sans cela, un conteneur neuf
-   démarre sans base ;
+1. `prisma generate` doit être exécuté dans l'image finale (le client généré dépend de la plateforme - musl sur alpine),
+   et l'image doit embarquer le paquet `openssl` : sans lui, Prisma ne détecte pas OpenSSL 3 et télécharge des moteurs
+   `openssl-1.1` incompatibles avec alpine ;
+2. les migrations doivent être **versionnées** (le starter les excluait du versionnement via `.gitignore`) et appliquées
+   au démarrage du conteneur via `prisma migrate deploy` dans l'entrypoint - sans cela, un conteneur neuf démarre sans
+   base ;
 3. le fichier SQLite doit vivre **hors de l'image**, dans un volume (`DATABASE_URL=file:/app/data/orion.db`), sinon les
    données sont perdues à chaque recréation du conteneur. Ce volume est aussi la cible du plan de sauvegarde (§ 7).
 
@@ -147,11 +147,21 @@ contradiction avec l'exigence d'un lancement direct.
 - **Retour arrière** : le tag par SHA permet de redémarrer explicitement l'image du commit précédent en cas de problème
   (voir aussi plan de sauvegarde § 7 pour les données).
 
+**Releases versionnées (SemVer).** En complément du flux continu, les releases sont marqués par un tag
+git **`vX.Y.Z`** (conforme aux règles SemVer strictes : MAJOR = rupture d'API ou de schéma de données, MINOR =
+fonctionnalité rétrocompatible, PATCH = correctif) ; le tag git est la référence de version. Procédure : le tag est posé
+sur un commit de `main` déjà validé par la CI ; son push déclenche le workflow `release.yml`, qui vérifie le format du
+tag (garde-fou SemVer strict, échec sinon), reconstruit les deux modules, et publie une **release GitHub** avec les
+artefacts (`orion-server-vX.Y.Z.tar.gz` :
+build Node + schéma/migrations Prisma ; `orion-client-vX.Y.Z.tar.gz` : dist React) et des notes générées depuis
+l'historique des commits/PR. Les tags ne redéclenchent pas la CI de branche (filtre `branches`) : la validation est
+celle du run CI du commit taggé.
+
 ## 4. Plan de testing périodique
 
 **État initial** : le starter ne contient qu'un test placeholder par module (`expect(true).toBe(true)`) ; la couverture
-réelle est donc nulle. Le plan ci-dessous définit la cible que le pipeline met en œuvre ; le déroulé effectif de la
-mise en place est décrit au § 2.
+réelle est donc nulle. Le plan ci-dessous définit la cible que le pipeline met en œuvre ; le déroulé effectif de la mise
+en place est décrit au § 2.
 
 ### 4.1 Types de tests automatisés
 
@@ -160,7 +170,7 @@ mise en place est décrit au § 2.
 | Analyse statique          | back + front                                                                            | ESLint, `tsc --noEmit`                  | Erreurs de typage et violations de règles avant même d'exécuter le code                                                              |
 | Tests unitaires back      | services, repositories, validation Zod                                                  | Vitest (+ mock Prisma)                  | Logique métier isolée : chaque couche testée sans base de données réelle                                                             |
 | Tests d'intégration back  | routes Express de bout en bout                                                          | Vitest + Supertest, base SQLite jetable | Contrats de l'API (statuts HTTP, corps de réponse, erreurs de validation) sur une vraie chaîne route > controller > service > Prisma |
-| Tests de composants front | composants, hooks, services d'appel API                                                 | Vitest + Testing Library (jsdom)        | Rendu et comportement des composants React et des hooks TanStack Query, couche d'appel API (axios) mockée                                                              |
+| Tests de composants front | composants, hooks, services d'appel API                                                 | Vitest + Testing Library (jsdom)        | Rendu et comportement des composants React et des hooks TanStack Query, couche d'appel API (axios) mockée                            |
 | Tests e2e navigateur      | smoke : parcours critiques (dashboard, CRUD contact) *(PR)* ; suite étendue *(nightly)* | Playwright (Chromium)                   | Le comportement réel vu de l'utilisateur : front, API et base réunis, dans un vrai navigateur                                        |
 | Smoke test conteneurisé   | application complète                                                                    | `docker compose up` en CI + `curl`      | L'application démarre réellement en conteneurs : `/api/health` répond 200, le front sert sa page                                     |
 | Analyse qualité/sécurité  | tout le code                                                                            | SonarQube Cloud                         | Bugs, vulnérabilités, code smells, duplication, couverture (voir § 5)                                                                |
@@ -177,12 +187,12 @@ en CI, et tout test devenu instable est déplacé vers la suite nightly le temps
 
 ### 4.2 Fréquence d'exécution
 
-| Déclencheur                   | Tests exécutés                                                                                                                     | Rôle                                                                                                                                                                                                                                                                                                                                        |
-|-------------------------------|------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Push** (toute branche)      | Lint + typecheck + tests unitaires, d'intégration et de composants avec couverture + build back et front                                                                | Feedback rapide au développeur à chaque commit poussé                                                                                                                                                                                                                                                                                       |
+| Déclencheur                   | Tests exécutés                                                                                                                                             | Rôle                                                                                                                                                                                                                                                                                                                                        |
+|-------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Push** (toute branche)      | Lint + typecheck + tests unitaires, d'intégration et de composants avec couverture + build back et front                                                   | Feedback rapide au développeur à chaque commit poussé                                                                                                                                                                                                                                                                                       |
 | **Pull request** vers `main`  | Idem push + analyse SonarQube (quality gate) + build des images Docker + smoke test compose + scan Trivy des images + smoke e2e Playwright sur cette stack | Exécutée **dès l'ouverture de la PR** puis à chaque mise à jour de la branche : feedback immédiat pour l'auteur, et le reviewer ne relit que des PR déjà vertes. La protection de branche (*required status checks* + *require branches up to date*) exige ces mêmes résultats, revalidés contre le `main` courant, pour autoriser le merge |
-| **Nightly** (cron quotidien)  | Suite complète + suite e2e étendue + `npm audit` + scan Trivy des images                                                           | Détecter les régressions *sans commit* : nouvelle CVE publiée, dérive d'une dépendance, panne d'un service externe (Sonar). Un pipeline vert hier peut être rouge aujourd'hui. Les e2e longs ou en cours de fiabilisation s'exécutent ici (déclenchement manuel possible avant release)                                                     |
-| **Release / push sur `main`** | Suite complète + publication des images GHCR                                                                                       | Seul un état intégralement validé est promu en artefact déployable                                                                                                                                                                                                                                                                          |
+| **Nightly** (cron quotidien)  | Suite complète + suite e2e étendue + `npm audit` + scan Trivy des images                                                                                   | Détecter les régressions *sans commit* : nouvelle CVE publiée, dérive d'une dépendance, panne d'un service externe (Sonar). Un pipeline vert hier peut être rouge aujourd'hui. Les e2e longs ou en cours de fiabilisation s'exécutent ici (déclenchement manuel possible avant release)                                                     |
+| **Release / push sur `main`** | Suite complète + publication des images GHCR                                                                                                               | Seul un état intégralement validé est promu en artefact déployable                                                                                                                                                                                                                                                                          |
 
 ### 4.3 Objectifs des tests
 
@@ -335,9 +345,9 @@ valide la remédiation.
 - Mises à jour React / Node.js
 - Mises à jour Docker (images)
 
-Premier cas concret à intégrer à la rédaction de cette section : dès la mise en place de la CI, `npm audit` a révélé
-2 vulnérabilités critiques et 1 haute dans la chaîne de test Vitest 2.x ; montée en version majeure (Vitest 4) validée
-par les suites de tests avant le premier run du pipeline - illustration du cycle détection (audit nightly, § 4.2) >
+Premier cas concret à intégrer à la rédaction de cette section : dès la mise en place de la CI, `npm audit` a révélé 2
+vulnérabilités critiques et 1 haute dans la chaîne de test Vitest 2.x ; montée en version majeure (Vitest 4) validée par
+les suites de tests avant le premier run du pipeline - illustration du cycle détection (audit nightly, § 4.2) >
 mise à jour > validation par les tests.
 
 ### 8.2 Mise à jour du pipeline CI/CD
