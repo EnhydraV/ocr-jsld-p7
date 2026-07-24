@@ -24,5 +24,7 @@ USER nginx
 
 EXPOSE 8080
 
+# 127.0.0.1 explicite : localhost se résout en ::1 (IPv6) dans le conteneur,
+# or nginx n'écoute qu'en IPv4 - connection refused sinon
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -q -O /dev/null http://localhost:8080/ || exit 1
+  CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
