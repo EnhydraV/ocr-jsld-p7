@@ -1,7 +1,5 @@
 # Documentation technique – Orion CRM
 
-**Page de titre**
-
 - **Titre du document** : Documentation technique – Orion CRM
 - **Auteur** : Vincent Vanwaelscappel
 - **Option choisie** : Option B (Scénario Orion)
@@ -87,7 +85,7 @@ processus lancé en root, et front servi par `vite preview` (outil de prévisual
 | Utilisateur         | `USER node` (back) / `nginx` (front)                        | Ne jamais exécuter un conteneur en root : en cas de compromission du processus, l'attaquant n'a pas les droits root dans le conteneur                                                                                                                                                                                                                                                                                                                                                                |
 | Healthcheck         | `HEALTHCHECK` sur `GET /api/health` (back) et `/` (front)   | Le back expose déjà `/api/health` ; permet à Docker/Compose de connaître l'état réel du service, pas seulement l'existence du processus                                                                                                                                                                                                                                                                                                                                                              |
 | `.dockerignore`     | `node_modules`, `dist`, `.env*`, `*.db`, `.git`, `coverage` | Contexte de build minimal, et garantie qu'aucun secret ni base locale n'est copié dans l'image                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Outillage runtime   | npm/npx/yarn supprimés de l'image finale (back)             | Un runtime n'installe pas de paquets : surface d'attaque réduite, et les dépendances internes de npm (tar, sigstore…) portent des CVE relevées par le scan Trivy sans aucun rapport avec l'application. L'entrypoint appelle le binaire prisma directement (`node_modules/.bin/prisma`) |
+| Outillage runtime   | npm/npx/yarn supprimés de l'image finale (back)             | Un runtime n'installe pas de paquets : surface d'attaque réduite, et les dépendances internes de npm (tar, sigstore…) portent des CVE relevées par le scan Trivy sans aucun rapport avec l'application. L'entrypoint appelle le binaire prisma directement (`node_modules/.bin/prisma`)                                                                                                                                                                                                              |
 
 **Spécificités Prisma/SQLite (back).** Trois contraintes structurent le Dockerfile back :
 
@@ -117,6 +115,9 @@ Deux services (pas de service base de données : SQLite est embarqué dans le ba
 
 - **Healthchecks** : `server` est vérifié via `/api/health` ; `client` ne démarre qu'une fois le back sain
   (`depends_on: condition: service_healthy`).
+- **Images nommées GHCR** : chaque service déclare à la fois `image:` (`ghcr.io/enhydrav/ocr-jsld-p7-server` /
+  `-client`) et `build:` - `docker compose up --build` reste autonome depuis le dépôt (exigence du brief), tandis que
+  `docker compose pull` bascule sur les dernières images publiées par la CI (déploiement, § 3.3).
 - **Volume nommé** `orion-db` monté sur `/app/data` : persistance des données entre recréations de conteneurs.
 - **Réseau** : réseau bridge **nommé** `orion` (`name: orion`), déclaré explicitement plutôt que le réseau par défaut de
   Compose ; les services se résolvent par leur nom (`server`, `client`). Le nom stable et prévisible prépare la Partie
@@ -141,24 +142,25 @@ contradiction avec l'exigence d'un lancement direct.
 
 - **Publication d'images** : à chaque push sur `main` validé par la CI, les deux images sont construites et poussées sur
   **GitHub Container Registry** (GHCR), taguées `latest` + SHA du commit (traçabilité : toute image est reliable à un
-  commit exact). L'authentification utilise le `GITHUB_TOKEN` fourni par GitHub Actions (permission `packages: write`),
-  aucun secret supplémentaire à gérer.
+  commit exact), plus le tag de version `vX.Y.Z` lorsque ce push a donné lieu à une release (voir plus bas).
+  L'authentification utilise le `GITHUB_TOKEN` fourni par GitHub Actions (permission `packages: write`), aucun secret
+  supplémentaire à gérer.
 - **Déploiement** : sur la machine cible (poste ou serveur interne Orion), `docker compose pull && docker compose up -d`
   récupère et démarre les dernières images publiées. Le healthcheck sert de smoke test post-déploiement.
 - **Retour arrière** : le tag par SHA permet de redémarrer explicitement l'image du commit précédent en cas de problème
   (voir aussi plan de sauvegarde § 7 pour les données).
 
-**Releases versionnées (SemVer).** En complément du flux continu, les releases sont marquées par un tag git
-**`vX.Y.Z`** (SemVer strict : MAJOR = rupture d'API ou de schéma de données, MINOR = fonctionnalité rétrocompatible,
-PATCH = correctif) ; le tag git est la référence de version. Le versioning est **automatisé par semantic-release**,
-adossé à la convention *conventional commits* déjà appliquée sur le dépôt : à chaque push sur `main` **intégralement
-validé par la CI** (le job release dépend de tous les autres - tests, quality gate SonarQube, smoke test conteneurisé,
-scan Trivy), l'historique depuis la dernière release est analysé - `feat:` > MINOR, `fix:`/`perf:` > PATCH,
-`BREAKING CHANGE` > MAJOR ; les types neutres (`docs:`, `ci:`, `test:`, `chore:`) ne déclenchent aucune release.
-Le workflow pose alors le tag, et publie une **release GitHub** avec notes générées depuis les commits et artefacts
+**Releases versionnées (SemVer).** En complément du flux continu, les releases sont marquées par un tag git **`vX.Y.Z`**
+(SemVer strict : MAJOR = rupture d'API ou de schéma de données, MINOR = fonctionnalité rétrocompatible, PATCH =
+correctif) ; le tag git est la référence de version. Le versioning est **automatisé par semantic-release**, adossé à la
+convention *conventional commits* déjà appliquée sur le dépôt : à chaque push sur `main` **intégralement validé par la
+CI** (le job release dépend de tous les autres - tests, quality gate SonarQube, smoke test conteneurisé, scan Trivy),
+l'historique depuis la dernière release est analysé - `feat:` > MINOR, `fix:`/`perf:` > PATCH,
+`BREAKING CHANGE` > MAJOR ; les types neutres (`docs:`, `ci:`, `test:`, `chore:`) ne déclenchent aucune release. Le
+workflow pose alors le tag, et publie une **release GitHub** avec notes générées depuis les commits et artefacts
 (`orion-server-dist.tar.gz` : build Node + schéma/migrations Prisma ; `orion-client-dist.tar.gz` : dist React).
-L'arbitrage MAJOR/MINOR/PATCH est ainsi encodé dans les messages de commit au moment où le changement est écrit -
-la qualité des messages devient une exigence de production, vérifiable en revue de PR.
+L'arbitrage MAJOR/MINOR/PATCH est ainsi encodé dans les messages de commit au moment où le changement est écrit - la
+qualité des messages devient une exigence de production, vérifiable en revue de PR.
 
 ## 4. Plan de testing périodique
 

@@ -5,7 +5,9 @@ name: orion
 services:
   server:
     container_name: orion-server
-    image: orion-server
+    # image + build : `up --build` reconstruit localement (lancement autonome),
+    # `pull` récupère la dernière image publiée par la CI (déploiement, §3.3)
+    image: ghcr.io/enhydrav/ocr-jsld-p7-server:latest
     build: ./server
     ports:
       - "8080:8080"
@@ -17,7 +19,7 @@ services:
 
   client:
     container_name: orion-client
-    image: orion-client
+    image: ghcr.io/enhydrav/ocr-jsld-p7-client:latest
     build: ./client
     ports:
       # nginx-unprivileged écoute sur 8080 (port non privilégié), exposé en 4200

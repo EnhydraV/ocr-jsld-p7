@@ -143,7 +143,7 @@ jobs:
       - name: Scan Trivy — image server
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
-          image-ref: orion-server
+          image-ref: ghcr.io/enhydrav/ocr-jsld-p7-server:latest
           severity: HIGH,CRITICAL
           exit-code: '1'
           # Ne bloque que sur les CVE corrigeables (les CVE sans correctif éditeur
@@ -152,7 +152,7 @@ jobs:
       - name: Scan Trivy — image client
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
-          image-ref: orion-client
+          image-ref: ghcr.io/enhydrav/ocr-jsld-p7-client:latest
           severity: HIGH,CRITICAL
           exit-code: '1'
           ignore-unfixed: true
@@ -166,6 +166,9 @@ jobs:
     permissions:
       # Nécessaire pour pousser le tag et créer la release GitHub
       contents: write
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -195,9 +198,61 @@ jobs:
           tar -czf orion-server-dist.tar.gz -C server dist prisma package.json package-lock.json
           tar -czf orion-client-dist.tar.gz -C client dist
       - name: semantic-release (tag + release GitHub si commits éligibles)
+        id: semantic
         uses: cycjimmy/semantic-release-action@b12c8f6015dc215fe37bc154d4ad456dd3833c90 # v6.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: Publication GHCR
+    # Stratégie de déploiement §3.3 : chaque push sur main validé publie les images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # release dépend déjà de tous les autres jobs (tests, sonar, docker)
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Connexion à GHCR
+        uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Métadonnées image server (tags latest + SHA + version éventuelle)
+        id: meta-server
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}-server
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+            type=raw,value=v${{ needs.release.outputs.new_release_version }},enable=${{ needs.release.outputs.new_release_published == 'true' }}
+      - name: Build et push image server
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: server
+          push: true
+          tags: ${{ steps.meta-server.outputs.tags }}
+          labels: ${{ steps.meta-server.outputs.labels }}
+      - name: Métadonnées image client (tags latest + SHA + version éventuelle)
+        id: meta-client
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}-client
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+            type=raw,value=v${{ needs.release.outputs.new_release_version }},enable=${{ needs.release.outputs.new_release_published == 'true' }}
+      - name: Build et push image client
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: client
+          push: true
+          tags: ${{ steps.meta-client.outputs.tags }}
+          labels: ${{ steps.meta-client.outputs.labels }}
 
   audit:
     name: Audit des dépendances (nightly)
