@@ -1,6 +1,6 @@
 import { useContacts, useDeleteContact } from '../hooks/useContacts';
 import Card from '../components/Card';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 
 export default function ContactList() {
   const { data: contacts, isLoading, error } = useContacts();

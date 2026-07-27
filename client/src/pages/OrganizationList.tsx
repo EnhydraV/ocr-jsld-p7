@@ -1,6 +1,6 @@
 import { useOrganizations, useDeleteOrganization } from '../hooks/useOrganizations';
 import Card from '../components/Card';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 
 export default function OrganizationList() {
   const { data: organizations, isLoading, error } = useOrganizations();
