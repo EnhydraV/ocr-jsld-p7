@@ -1,0 +1,74 @@
+# Stack de monitoring ELK — cf. DOCUMENTATION.md §6
+# Volontairement hors CI/CD (consigne Partie 2) : stack d'observation locale.
+#
+# Prérequis : le réseau `orion` doit exister (démarrer la stack applicative
+# d'abord, ou `docker network create orion`).
+# Lancement : docker compose up -d (depuis elk/), Kibana sur http://localhost:5601
+name: orion-elk
+
+services:
+  elasticsearch:
+    container_name: orion-elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.19
+    environment:
+      # Nœud unique : pas de cluster à former
+      - discovery.type=single-node
+      # Stack locale, ports liés à 127.0.0.1 : on s'épargne TLS et comptes
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      # Les index (logs collectés) survivent aux redémarrages de la stack
+      - elk-es-data:/usr/share/elasticsearch/data
+    networks:
+      - elk
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  logstash:
+    container_name: orion-logstash
+    image: docker.elastic.co/logstash/logstash:8.19.19
+    environment:
+      - LS_JAVA_OPTS=-Xms256m -Xmx256m
+      # Pas d'auto-monitoring de Logstash vers Elasticsearch (bruit inutile)
+      - XPACK_MONITORING_ENABLED=false
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    ports:
+      # Entrée TCP JSON, exposée au poste pour l'API lancée en dev (hors Docker)
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - elk
+      # Raccordé au réseau applicatif : le back résout `logstash` (cf. §3.2)
+      - orion
+
+  kibana:
+    container_name: orion-kibana
+    image: docker.elastic.co/kibana/kibana:8.19.19
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "127.0.0.1:5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - elk
+
+volumes:
+  elk-es-data:
+
+networks:
+  elk:
+  # Réseau de la stack applicative (docker-compose.yml racine), non géré ici
+  orion:
+    external: true
+    name: orion

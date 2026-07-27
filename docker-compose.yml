@@ -9,6 +9,11 @@ services:
     # `pull` récupère la dernière image publiée par la CI (déploiement, §3.3)
     image: ghcr.io/enhydrav/ocr-jsld-p7-server:latest
     build: ./server
+    environment:
+      # Vide par défaut : le transport Logstash ne s'active que si la stack
+      # ELK tourne (elk/docker-compose.yml) — LOGSTASH_HOST=logstash dans .env
+      - LOGSTASH_HOST=${LOGSTASH_HOST:-}
+      - LOGSTASH_PORT=${LOGSTASH_PORT:-5000}
     ports:
       - "8080:8080"
     volumes:

@@ -298,6 +298,54 @@ valide la remédiation.
 
 ## 6. Monitoring, métriques & KPI
 
+**Mise en place du monitoring (stack ELK)** - Les logs applicatifs sont collectés, centralisés et visualisés par une
+stack **Elasticsearch + Logstash + Kibana 8.19** locale, décrite dans `elk/docker-compose.yml`. Conformément au brief,
+elle reste **hors du pipeline CI/CD** (trop lourde pour y être exécutée à chaque run) : c'est un outil d'observation
+lancé à la demande sur le poste (`docker compose up -d` depuis `elk/`, Kibana sur `http://localhost:5601`).
+
+- **Sources de logs** : le back émet des logs **structurés en JSON** via **Winston** - événements applicatifs
+  (démarrage, erreurs via le handler d'erreurs) et, via **Morgan** branché sur Winston, un événement par requête HTTP
+  (méthode, URL, statut, temps de réponse, taille). Le ping du healthcheck Docker (toutes les 30 s) est **exclu** pour
+  ne pas noyer la volumétrie réelle sous du bruit. Le front (fichiers statiques nginx) n'est pas raccordé : la
+  quasi-totalité du signal utile (erreurs, performances, volumétrie métier) vit dans l'API.
+- **Acheminement** : transport TCP `winston-logstash` vers `logstash:5000` (entrée `json_lines`, aucun parsing à
+  écrire), activé **uniquement** si `LOGSTASH_HOST` est défini (fichier `.env`) - sans la stack ELK, l'application
+  logge simplement sur stdout et n'est jamais pénalisée ; si Logstash devient injoignable, le transport épuise ses
+  tentatives de reconnexion puis se coupe sans impacter l'API.
+- **Raccordement réseau** : la stack ELK vit dans son propre compose et rejoint le réseau applicatif `orion` en
+  `external: true` (préparé au § 3.2) - les deux stacks restent indépendantes (démarrage, arrêt, cycle de vie).
+- **Indexation** : un index Elasticsearch par jour (`orion-logs-AAAA.MM.JJ`), consultés dans Kibana via la data view
+  `orion-logs-*` ; la purge des vieux logs se réduit à une suppression d'index.
+- **Sécurité** : `xpack.security.enabled=false` assumé - stack locale d'analyse, tous les ports (9200, 5601, 5000)
+  liés à `127.0.0.1`, aucune exposition réseau ; activer TLS + comptes n'apporterait ici que de la friction.
+
+Chemin d'un log, de la requête au dashboard :
+
+```mermaid
+flowchart LR
+    req(("Requêtes<br/>HTTP")) --> express
+
+    subgraph appstack["Stack applicative — docker-compose.yml · réseau orion"]
+        subgraph srv["Conteneur server"]
+            direction TB
+            express["Express"] --> morgan["Morgan — capteur HTTP<br/>méthode · URL · statut · durée<br/>(healthcheck exclu)"]
+            morgan -- "niveau http" --> winston["Winston — logger<br/>événements JSON structurés"]
+            evts["Événements applicatifs<br/>démarrage · erreurs"] --> winston
+        end
+    end
+
+    winston -- "transport Console" --> stdout["stdout<br/>(docker logs)"]
+    winston == "transport winston-logstash<br/>TCP :5000 · actif si LOGSTASH_HOST" ==> logstash
+
+    subgraph elkstack["Stack ELK — elk/docker-compose.yml · réseaux elk + orion (external)"]
+        direction LR
+        logstash["Logstash<br/>input tcp · codec json_lines"] == "1 index par jour<br/>orion-logs-AAAA.MM.JJ" ==> es[("Elasticsearch :9200<br/>volume elk-es-data")]
+        kibana["Kibana :5601<br/>data view orion-logs-*"] -. "recherches · agrégations" .-> es
+    end
+
+    dev(("Navigateur<br/>127.0.0.1:5601")) --> kibana
+```
+
 ### 6.1 Métriques DORA
 
 *(méthode de calcul + valeurs observées pour chacune)*
