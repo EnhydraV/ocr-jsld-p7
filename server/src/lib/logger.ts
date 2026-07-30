@@ -19,15 +19,15 @@ export function createLogger(env: LoggerEnv): winston.Logger {
       host: env.LOGSTASH_HOST,
       port: Number(env.LOGSTASH_PORT ?? 5000),
     });
-    // Retries de connexion épuisés : le transport se coupe tout seul (silent) ;
-    // on trace l'incident au lieu de laisser l'erreur faire tomber l'API
+    // Retries de connexion épuisés (4 par défaut) : le transport se coupe de
+    // lui-même et l'application continue de loguer sur stdout
     logstash.on('error', (err: Error) => {
       console.error(`Logstash transport disabled: ${err.message}`);
     });
     transports.push(logstash);
   }
 
-  return winston.createLogger({
+  const logger = winston.createLogger({
     // « http » inclut les niveaux error/warn/info : les requêtes sont loguées par défaut
     level: env.LOG_LEVEL ?? 'http',
     silent: env.NODE_ENV === 'test',
@@ -35,6 +35,16 @@ export function createLogger(env: LoggerEnv): winston.Logger {
     defaultMeta: { service: 'orion-server' },
     transports,
   });
+
+  // OBLIGATOIRE : winston fait remonter les erreurs de ses transports sur le
+  // logger lui-même. Sans écouteur ici, un Logstash injoignable provoque un
+  // « Unhandled 'error' event » qui TUE le process (vérifié) — l'observabilité
+  // ne doit jamais pouvoir arrêter l'application qu'elle observe.
+  logger.on('error', (err: Error) => {
+    console.error(`Logger error (application unaffected): ${err.message}`);
+  });
+
+  return logger;
 }
 
 const logger = createLogger(process.env);
