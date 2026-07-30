@@ -1,0 +1,24 @@
+{
+  "name": "orion-tooling",
+  "private": true,
+  "type": "module",
+  "description": "Outillage de dépôt, hors application : métriques DORA et KPI du pipeline",
+  "scripts": {
+    "dora": "tsx dora-metrics.ts",
+    "dora:index": "tsx dora-metrics.ts --index",
+    "kibana:setup": "tsx kibana-setup.ts",
+    "kibana:import": "tsx kibana-setup.ts --from-file",
+    "kibana:export": "tsx kibana-setup.ts --export",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

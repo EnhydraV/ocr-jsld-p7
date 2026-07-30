@@ -310,8 +310,17 @@ lancé à la demande sur le poste (`docker compose up -d` depuis `elk/`, Kibana 
   quasi-totalité du signal utile (erreurs, performances, volumétrie métier) vit dans l'API.
 - **Acheminement** : transport TCP `winston-logstash` vers `logstash:5000` (entrée `json_lines`, aucun parsing à
   écrire), activé **uniquement** si `LOGSTASH_HOST` est défini (fichier `.env`) - sans la stack ELK, l'application
-  logge simplement sur stdout et n'est jamais pénalisée ; si Logstash devient injoignable, le transport épuise ses
-  tentatives de reconnexion puis se coupe sans impacter l'API.
+  logge simplement sur stdout et n'est jamais pénalisée.
+- **Résilience du transport, vérifiée en conditions réelles** : Logstash injoignable, le transport épuise ses
+  4 tentatives de connexion puis se désactive seul, l'API continuant de servir et de loguer sur stdout. Ce résultat
+  n'est cependant **pas acquis par défaut** : winston fait remonter les erreurs de ses transports **sur le logger
+  lui-même**, et un `EventEmitter` sans écouteur `'error'` fait tomber le process Node (« Unhandled 'error' event »).
+  Sans ce détail, un simple `docker compose up` de l'application sans la stack ELK suffisait à faire sortir le
+  conteneur `server` immédiatement. Un écouteur d'erreur sur le logger est donc obligatoire, et deux tests de
+  non-régression le verrouillent (`logger.test.ts`, « logger resilience »). Principe général : **l'observabilité ne
+  doit jamais pouvoir arrêter l'application qu'elle observe.** Limite connue et assumée : une fois le transport
+  désactivé, il ne se reconnecte pas - relancer le service (`docker compose restart server`) après un redémarrage de
+  Logstash pour reprendre l'expédition des logs.
 - **Raccordement réseau** : la stack ELK vit dans son propre compose et rejoint le réseau applicatif `orion` en
   `external: true` (préparé au § 3.2) - les deux stacks restent indépendantes (démarrage, arrêt, cycle de vie).
 - **Indexation** : un index Elasticsearch par jour (`orion-logs-AAAA.MM.JJ`), consultés dans Kibana via la data view
@@ -348,27 +357,192 @@ flowchart LR
 
 ### 6.1 Métriques DORA
 
-*(méthode de calcul + valeurs observées pour chacune)*
+**Source et méthode** - Les quatre métriques sont calculées sur l'historique **réel** des exécutions du pipeline,
+récupéré via l'API GitHub Actions (`/repos/.../actions/runs` et `.../jobs`). Le calcul est implémenté dans
+`tools/dora-metrics.ts` (`npm run dora` depuis `tools/`) : les chiffres sont ainsi **reproductibles** et
+rafraîchissables à mesure que l'historique s'allonge, plutôt que relevés à la main.
 
-- Lead Time
-- Deployment Frequency
-- MTTR
-- Change Failure Rate
+**Plateforme dédiée ou script maison : arbitrage** - des outils calculent ces métriques automatiquement et ont été
+évalués. **Apache DevLake** (projet Apache actif : ingestion multi-sources, dashboards Grafana livrés, déploiement en
+4 conteneurs - MySQL, backend, interface de configuration, Grafana) et **Middleware** (plateforme DORA open source
+auto-hébergée) sont les deux références sérieuses. Le **Four Keys** de Google, longtemps la référence, est **archivé
+depuis janvier 2024** : écarté à ce titre. Côté marketplace GitHub, aucune action ne dépasse la dizaine d'étoiles - rien
+sur quoi asseoir un livrable.
+
+L'argument en faveur de la plateforme est réel et doit être reconnu : **maintenance externalisée**, définitions éprouvées
+par des années d'usage, aucun code propre à maintenir. Trois éléments ont malgré tout fait retenir le script :
+
+1. **Le travail de définition n'est pas supprimé, seulement déplacé.** Une plateforme doit être configurée pour savoir
+   ce qui compte comme déploiement dans *ce* dépôt ; la décision (« un déploiement = job de publication GHCR réussi »)
+   reste à prendre et à défendre. Elle serait alors enfouie dans une configuration, alors que la présente documentation
+   doit précisément l'expliciter.
+2. **Coût local** : 4 conteneurs supplémentaires, dont une base de données et un **second outil de visualisation**
+   (Grafana) à côté du Kibana déjà en place, sur un poste qui fait déjà tourner la stack applicative et la stack ELK.
+   Le brief autorise Grafana, mais la cohérence du livrable y perdrait.
+3. **Fréquence d'usage** : ces chiffres sont produits ponctuellement (rédaction, actualisation avant dépôt), pas
+   surveillés en continu ; une plateforme amortit son installation sur un usage durable. À noter en sens inverse
+   qu'externaliser la maintenance signifie aussi subir les montées de version et migrations de schéma, là où un script
+   sans dépendance adossé à une API REST stable dérive peu.
+
+Contrepartie assumée du choix : le script est du code propre au projet, donc **il doit être testé comme le reste** -
+`tools/dora/metrics.test.ts` couvre les calculs sensibles (regroupement des épisodes, lead time, taux d'échec,
+détection des déploiements). Le raisonnement s'inverse avec plusieurs dépôts, plusieurs équipes ou un historique long :
+**DevLake devient alors le choix rationnel**, et c'est la recommandation d'évolution.
+
+**Dashboards décrits en code, donc reproductibles** - un dashboard construit à la main dans une interface n'est pas
+reproductible : il disparaît avec le poste qui l'héberge et personne ne peut le recréer à l'identique. Les **deux**
+dashboards sont donc **définis en code** - « Pipeline CI/CD - métriques DORA » (`tools/kibana/buildDashboard.ts`,
+7 panneaux) et « Logs applicatifs - Orion » (`tools/kibana/buildLogsDashboard.ts`, 6 panneaux) - et créés par
+`npm run kibana:setup`, qui pose au préalable les deux data views (`orion-logs-*` pour les logs applicatifs,
+`orion-pipeline-metrics` pour le pipeline). Deux commandes complètent le cycle :
+`npm run kibana:export` capture dans `tools/kibana/dashboards.ndjson` ce qui a été retouché dans l'interface, et
+`npm run kibana:import` réinjecte ce fichier. Les créations passent par `overwrite=true`, les commandes sont donc
+rejouables. Le code reste la référence par défaut, pour qu'une modification ne soit jamais masquée par un export plus
+ancien.
+
+Quatre contraintes de l'API, découvertes en exécutant réellement la stack et consignées dans le code, expliquent la
+forme des objets produits : les identifiants des data views doivent être **imposés** (un UUID généré rend les
+références du dashboard invalides à l'import) ; le type `lens` refuse l'attribut `kibanaSavedObjectMeta` (mapping
+strict - la requête vit dans `state`) ; l'API d'**import** applique la chaîne de migrations des versions antérieures et
+échoue sur un objet écrit à la main, d'où le choix de l'API de **création** pour les objets définis en code ; enfin un
+champ `text` n'est pas agrégeable, ce qui laissait un panneau vide (le message de commit est donc indexé en `keyword`).
+Onze tests structurels (`buildDashboard.test.ts`) verrouillent ces invariants sans nécessiter d'instance Kibana.
+
+**Visualisation dans Kibana** - `npm run dora:index` indexe les métriques dans Elasticsearch (index
+`orion-pipeline-metrics`, un document par run, par job et par épisode d'indisponibilité ; identifiants stables, donc
+réexécution idempotente). Kibana dérive alors les indicateurs par agrégation - fréquence de déploiement (compte des
+runs marqués `is_deployment`), lead time (médiane de `lead_time_min`), MTTR (médiane de `recovery_hours`), CFR (ratio
+des `conclusion`) - plutôt que de stocker des valeurs pré-calculées qui se périmeraient. **Index distinct** des logs
+applicatifs (`orion-logs-*`) : les deux natures de mesure cohabitent dans le même Elasticsearch sans se mélanger.
+Contrainte assumée : la collecte est **locale et à la demande** (ou par tâche planifiée sur le poste), car la stack ELK
+n'est pas exposée et reste hors du pipeline (consigne du brief) - un job de CI ne peut donc pas l'alimenter.
+
+**Période observée** : du 23/07/2026 13:21 UTC au 27/07/2026 18:27 UTC, soit **4,21 jours** et **17 exécutions** sur
+`main` - 13 déclenchées par un push, 4 par le cron nightly, **0 par une pull request**. Le brief demandait au moins 3
+exécutions ; l'échantillon reste néanmoins petit, ce qui est signalé dans chaque interprétation.
+
+**Limite fondamentale, à énoncer avant tout chiffre : ce projet n'a pas d'environnement de production.** Or les
+métriques DORA parlent de code *qui tourne en production*. Le nombre réel de déploiements de cette application est donc
+**zéro**, et aucun des quatre indicateurs n'est mesurable au sens strict. Ce qui est mesuré ici, ce sont des **proxys
+explicitement nommés**, arrêtés au dernier événement observable du pipeline : la publication des images. Une image sur
+GHCR est **prête à être déployée**, elle n'est pas déployée - c'est la définition de la livraison continue (§ 3.3), pas
+du déploiement continu. Chaque métrique ci-dessous porte donc la mention de ce qu'elle mesure réellement.
+
+**Définitions retenues** (indispensables : les mêmes mots recouvrent des mesures différentes selon les organisations) -
+une **publication** est un job « Publication GHCR » réussi, c'est-à-dire le moment où le changement devient
+*installable* ; le **lead time** court du commit (horodatage exposé par l'API) jusqu'à la fin de cette publication ; un
+**épisode d'indisponibilité** court du run rouge jusqu'au run vert suivant (les rouges consécutifs appartiennent au même
+épisode : l'incident n'est pas résolu tant que rien n'est repassé au vert).
+
+**Ce qui rendrait ces métriques vraies** : un environnement de production réel (VPS ou hébergeur, même modeste) et une
+étape de déploiement automatisée dans le workflow, idéalement déclarée en `environment:` afin que GitHub horodate les
+déploiements via son API dédiée - c'est d'ailleurs le mécanisme sur lequel s'appuient les plateformes comme DevLake.
+Le lead time inclurait alors l'installation, la fréquence compterait de vrais déploiements, le MTTR mesurerait le
+rétablissement d'un **service** et le taux d'échec au changement deviendrait observable. C'est la première
+recommandation d'évolution du § 6.3.
+
+| Métrique DORA | Ce qui est réellement mesuré | Valeur | Interprétation |
+|---|---|---|---|
+| **Lead Time for Changes** | délai commit → **mise à disposition** (fin de la publication d'images), et non → production | **3,6 min** (médiane sur 2 publications : 3,2 et 4,1 min) | Niveau *elite* au sens DORA (< 1 h) **pour la partie mesurée**. Le pipeline n'est pas le facteur limitant. Ce que le chiffre ne contient pas : l'installation sur une cible (`docker compose pull`), manuelle et non horodatée. |
+| **Deployment Frequency** | fréquence de **livraison** : publications d'images prêtes à déployer | **0,59 / jour** (2 publications en 3,37 jours) | Niveau *high* (entre une fois par jour et une fois par semaine) rapporté à la livraison. La capacité de publication n'existe que depuis le run #12 ; la fréquence reflète le rythme d'un projet de formation, pas une limite technique. Indicateur complémentaire : **7 pushes sur 13 intégralement verts**, donc 7 versions livrables. |
+| **MTTR** (*time to restore*) | rétablissement du **pipeline** (run rouge → run vert), et non d'un service rendu à des utilisateurs | **26,4 h** en moyenne (médiane 17,2 h) sur 3 épisodes ; **1,4 h** de médiane hors échecs nightly | Écart considérable entre les deux périmètres, et c'est **le** diagnostic : un échec sur push est corrigé vite (32 min à 17 h), un échec nightly est resté rouge **60,4 h** (runs #13 à #16). Niveau *low* sur le périmètre complet. Traité en § 6.3. |
+| **Change Failure Rate** | taux d'échec **du pipeline** sur les changements poussés. Le taux d'échec *au déploiement* est **non mesurable** : sans service en production, il n'y a aucune dégradation à observer | **46,2 %** (6 pushes rouges sur 13) | Près d'un changement sur deux était défectueux et **aucun n'a atteint le registre d'images** : les jobs `release` et `publish` étant conditionnés (`needs`) à l'ensemble des vérifications, un échec bloque la livraison au lieu de la dégrader. Ce que l'on peut affirmer des 2 publications : elles ont toutes deux été précédées d'un smoke test de la stack complète réussi - donc des images qui démarrent, ce qui n'est pas une garantie d'absence d'incident en usage réel. |
+
+**Détail des 6 échecs sur push** (utile pour l'analyse § 6.3) : runs **#1** et **#2** = échec du seul job d'analyse
+SonarQube, pendant la mise en service du projet côté SonarCloud (les deux jobs de tests étaient verts) ; runs **#6**,
+**#8** et **#9** =
+défauts détectables uniquement à l'exécution des conteneurs (moteur Prisma absent de l'image, healthchecks résolus en
+IPv6) ; run **#16** = `package.json` mis à jour sans les lockfiles régénérés, `npm ci` refusant alors de s'exécuter
+(échec des 3 jobs en moins de 20 s).
 
 ### 6.2 KPI personnalisés
 
-- Temps de build
-- Temps des tests
-- Taux d'erreurs dans les logs
-- Autre KPI pertinent
+Cinq indicateurs suivis, choisis pour couvrir les deux natures de mesure que le brief demande de **distinguer** : les
+KPI **pipeline** (issus de GitHub Actions, ci-dessous) et les KPI **applicatifs** (issus de la stack ELK, § 6.3).
+
+| KPI | Valeur mesurée | Pourquoi ce KPI | Seuil d'alerte proposé |
+|---|---|---|---|
+| **Durée d'un pipeline vert** | médiane **107 s** (min 86 s, max 232 s) | C'est le délai de feedback au développeur : au-delà de quelques minutes, l'attente pousse à contourner la CI. | > 5 min = examiner la parallélisation et les caches |
+| **Temps avant le premier signal d'échec** | médiane **67 s** (min 12 s, max 117 s) | Mesure la qualité du *fail-fast* : un pipeline doit signaler tôt, pas seulement signaler. Les 12 s du run #16 illustrent le cas idéal (échec à l'installation des dépendances). | > 3 min = déplacer les vérifications rapides en amont |
+| **Durée des jobs de test** | back **24 s**, front **23 s** (médianes sur 16 exécutions) | Poste de coût principal quand la suite grossit ; stable ici, donc marge disponible avant que les tests ne deviennent le facteur limitant. | > 2 min = découper ou paralléliser les suites |
+| **Taux de réussite des runs** | **41,2 %** tous événements, **53,8 %** sur les pushes | Indicateur de santé du pipeline et, indirectement, de la discipline de développement. Valeur faible assumée en phase de construction du pipeline (les échecs #1-#9 sont ceux de sa mise au point), à surveiller une fois l'outillage stabilisé. | < 80 % sur 20 runs glissants = investiguer |
+| **Couverture de tests** | **89,2 %** des instructions sur le module back (mesure Vitest), seuils bloquants à 80 % sur le périmètre métier | Fiabilise la détection de régressions, condition de la quality gate SonarQube (§ 5). Mesuré par Vitest, publié à Sonar à chaque run. | < 80 % = build rouge (seuil déjà bloquant) |
+| **Taux de réponses en erreur** (KPI applicatif) | relevé sur le dashboard Kibana, **non significatif à ce stade** : le trafic observé est celui de la démonstration (généré via `/api/debug/status/:code`), pas un usage réel | Seul KPI de la couche applicative et non du pipeline : c'est lui qui révèle une dégradation vue par l'utilisateur, invisible dans GitHub Actions. | > 1 % de 5xx sur 1 h = investiguer |
+
+Décomposition de la durée du pipeline par job (médianes) : tests back 24 s et front 23 s (en parallèle), analyse
+SonarQube 66 s, images Docker + smoke test + Trivy 92 s, release 34 s, publication GHCR 73 s. La durée totale est
+passée de **86 s** (run #4) à **232 s** (run #17) au fil de l'ajout des étapes : c'est le **coût assumé** de la
+couverture ajoutée (analyse de qualité, scan de vulnérabilités, publication), qui reste très inférieur au seuil de 5
+minutes.
 
 ### 6.3 Analyse synthétique du monitoring
 
-- Tendances observées
-- Points forts
-- Points à améliorer
-- Dashboards
-- Alertes
+**Tendances observées** - Le pipeline s'est stabilisé : les échecs se concentrent sur sa période de construction
+(runs #1 à #9), tandis que les 5 derniers pushes n'ont produit qu'un seul échec, immédiatement corrigé. Sa durée a
+presque triplé (86 s → 232 s) au fil des ajouts, sans jamais approcher un seuil gênant. Aucun changement défectueux n'a
+atteint le registre d'images.
+
+**Points forts** - Lead time de niveau *elite* jusqu'à la mise à disposition (3,6 min du commit à l'image publiée,
+étant entendu que l'installation n'est pas comptée) ; conditionnement effectif des
+jobs de livraison, qui transforme un échec en blocage plutôt qu'en régression livrée ; fail-fast réel (échec signalé
+en 12 s au run #16) ; détection par le pipeline de défauts qu'aucun test unitaire n'aurait vus (moteur Prisma manquant
+dans l'image, healthcheck résolu en IPv6) - ce sont les jobs `docker` et `Trivy` qui les ont révélés.
+
+**Points critiques identifiés** (anomalies relevées dans les métriques et les journaux d'exécution) :
+
+1. **Les échecs nightly ne sont vus par personne** - trois exécutions planifiées consécutives (runs #13, #14, #15)
+   sont restées rouges pendant **60,4 h**, sur l'échec de l'audit des dépendances : 5 vulnérabilités de gravité *high*
+   côté back et 8 côté front (chaîne `brace-expansion`/`minimatch` via ESLint, et `react-router` côté front), toutes
+   corrigeables. Le correctif n'a été poussé que le 27/07, à l'occasion d'un autre travail. C'est **le point critique
+   principal** : le nightly n'a de valeur que si son échec déclenche une action - c'est précisément son rôle de
+   détecter ce qu'aucun commit ne révèle (§ 4.2). Sans notification, il produit un faux sentiment de sécurité. *Correction proposée* : ajouter au workflow une étape de notification conditionnée à
+   l'échec d'un run planifié (issue GitHub ouverte automatiquement, ou notification par courriel/Slack), et vérifier
+   les préférences de notification du dépôt.
+2. **La voie des pull requests n'a jamais été empruntée** - 13 pushes directs sur `main`, **0 pull request** sur toute
+   la période. Les garde-fous les plus coûteux du plan (quality gate SonarQube, smoke test de la stack, scan Trivy
+   avant fusion) existent mais ne protègent rien tant que les changements arrivent directement sur `main` : c'est la
+   cause directe du taux d'échec de 46 % sur `main`. *Correction proposée* : activer la protection de branche
+   (checks requis + branche à jour avant fusion) et passer par des branches courtes, comme le § 4.2 le prévoit.
+3. **Deux classes d'erreurs évitables en local** - les échecs #6/#8/#9 (comportement des conteneurs) et #16
+   (désynchronisation `package.json` / lockfile) auraient tous été détectés avant le push, respectivement par un
+   `docker compose up --wait` et par un `npm ci` local. *Correction proposée* : documenter cette vérification
+   préalable, voire l'automatiser par un hook de pré-push.
+4. **Aucun environnement de production, donc aucune métrique DORA au sens strict** - c'est la limite la plus
+   structurante de cette analyse, et elle n'est pas cosmétique : trois des quatre indicateurs sont des proxys arrêtés à
+   la publication des images (§ 6.1), et le quatrième - le taux d'échec au déploiement - est simplement **non
+   mesurable**, puisqu'il n'existe aucun service en fonctionnement dont on pourrait observer la dégradation. *Correction
+   proposée, et première recommandation d'évolution* : disposer d'une cible de déploiement réelle (un VPS modeste
+   suffit) et automatiser l'installation dans le workflow, en déclarant un `environment:` pour que GitHub horodate les
+   déploiements. Les quatre métriques deviendraient alors vraies plutôt qu'approchées.
+
+**Métriques applicatives (ELK) et dashboards** - Le dashboard « Logs applicatifs », construit sur la data view
+`orion-logs-*` alimentée par les logs structurés décrits en tête du § 6, réunit quatre visualisations et deux vues de
+logs bruts - dont une restreinte aux réponses en erreur (`status >= 400`), la barre KQL du dashboard permettant
+d'affiner encore :
+
+- **taux de réponses en erreur** (tuile *metric* : `count(kql='status >= 400') / count()`) - distingue l'usage fautif
+  (4xx) du défaut serveur (5xx) ;
+- **temps de réponse au 95e centile** (tuile *metric* sur `responseTimeMs`) - le p95 plutôt que la moyenne, parce que
+  la moyenne masque précisément les requêtes lentes qui dégradent l'expérience ;
+- **répartition des statuts dans le temps** (histogramme empilé par `status`) - fait apparaître les pics d'erreurs et
+  la volumétrie ;
+- **top des URL appelées** (table sur `url.keyword`) - identifie les points d'entrée les plus sollicités ;
+- **recherche sauvegardée « logs bruts »** - permet de passer de la tendance au journal détaillé sans quitter le
+  dashboard.
+
+Le trafic de démonstration est produit par `GET /api/debug/status/:code`, qui renvoie le statut demandé et permet donc
+de valider chaque visualisation sans attendre un incident réel. Point d'attention relevé pendant la mise en place : une
+URL inconnue saisie dans le navigateur ne produit **pas** de 404 côté API - nginx ne proxifie que `/api/*` et sert
+`index.html` pour tout le reste (fallback SPA, § 3.1) ; les erreurs applicatives se cherchent donc dans Kibana avec
+`status >= 400`, non en filtrant sur le niveau de log.
+
+**Captures** - `docs/dashboard-pipeline-dora.png` et `docs/dashboard-logs-applicatifs.png` (dashboards produits par
+`npm run kibana:setup` sur une stack ELK 8.19).
+
+**Alertes** - Aucun seuil d'alerte n'est aujourd'hui automatisé : les valeurs proposées en § 6.2 et les alertes
+applicatives (taux de 5xx, temps de réponse) restent à instrumenter. Priorité recommandée, cohérente avec le point
+critique n° 1 : **alerter d'abord sur l'échec du pipeline planifié**, puis sur le taux d'erreurs applicatives, avant
+d'affiner des seuils de performance sur un échantillon encore trop petit.
 
 ## 7. Plan de sauvegarde des données
 

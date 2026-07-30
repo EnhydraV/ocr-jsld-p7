@@ -38,6 +38,9 @@ Thumbs.db
 
 # Testing
 coverage/
+
+# Cache des réponses de l'API GitHub (scripts/dora-metrics.ts)
+.dora-cache/
 *.lcov
 .nyc_output/
 
