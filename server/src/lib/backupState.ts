@@ -3,7 +3,7 @@
  * machine et pas seulement par la lecture des journaux (cf. DOCUMENTATION.md
  * § 7.3). C'est ce fichier que lit le healthcheck du service `backup`.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const STATE_FILE = 'backup-state.json';
@@ -37,6 +37,10 @@ export function readState(directory: string): BackupState | null {
 }
 
 export function writeState(directory: string, state: BackupState): void {
+  // Le répertoire peut ne pas exister encore : un échec survenant AVANT la
+  // première sauvegarde doit tout de même pouvoir être enregistré, sinon le
+  // planificateur lèverait au moment même où il tente de signaler l'incident
+  mkdirSync(directory, { recursive: true });
   writeFileSync(statePath(directory), `${JSON.stringify(state, null, 2)}\n`);
 }
 

@@ -1,110 +1,62 @@
 /**
- * Sauvegarde de la base : instantané à chaud + application de la rétention.
+ * Sauvegarde de la base : point d'entrée. Toute la logique vit dans
+ * `lib/backupRunner.ts` (testable) ; ce script ne fait que lire l'environnement,
+ * enchaîner les appels et journaliser.
  *
- *   npm run backup                       une passe (poste de développement)
- *   npm run backup -- --loop             boucle planifiée (service `backup` du compose)
+ *   npm run backup                         une passe (poste de développement)
+ *   npm run backup -- --loop               boucle planifiée (service `backup` du compose)
+ *   node dist/scripts/backup.js --health   état du planificateur (healthcheck Docker)
  *   docker compose exec -T server node dist/scripts/backup.js      (à la demande)
- *   docker run --rm -v orion-db:/app/data -v "$PWD/backups":/app/backups \
- *     ghcr.io/enhydrav/ocr-jsld-p7-server:latest node dist/scripts/backup.js
  *
  * Aucun outil supplémentaire n'est requis : ni CLI sqlite3, ni image dédiée.
- * Prisma, déjà présent pour les migrations, suffit. Cf. § 7.
- *
- *   node dist/scripts/backup.js --health   état du planificateur (healthcheck)
+ * Prisma, déjà présent pour les migrations, suffit. Cf. DOCUMENTATION.md § 7.
  *
  * Variables : BACKUP_DIR, BACKUP_INTERVAL_MINUTES (défaut 60),
- * BACKUP_VERIFY_HOUR (heure UTC du contrôle quotidien de restaurabilité, défaut 4).
+ * BACKUP_VERIFY_HOUR (heure UTC du contrôle de restaurabilité, défaut 4).
  */
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { PrismaClient } from '@prisma/client';
-import {
-  DEFAULT_RETENTION,
-  databaseFileFromUrl,
-  latestSnapshot,
-  millisecondsUntilNextRun,
-  selectSnapshotsToDelete,
-  snapshotName,
-  snapshotPath,
-} from '../lib/backup';
-import { describeInspection, inspectSnapshot } from '../lib/snapshotInspection';
-import { evaluateHealth, readState, writeState, type BackupState } from '../lib/backupState';
+import { databaseFileFromUrl, millisecondsUntilNextRun } from '../lib/backup';
+import { createSnapshot } from '../lib/backupRunner';
+import { runScheduledBackup } from '../lib/backupScheduler';
+import type { SnapshotResult, VerificationResult } from '../lib/backupRunner';
+import { evaluateHealth, readState, writeState } from '../lib/backupState';
+import { describeInspection } from '../lib/snapshotInspection';
 import logger from '../lib/logger';
 
 const BACKUP_DIR = process.env.BACKUP_DIR ?? 'backups';
 const INTERVAL_MINUTES = Number(process.env.BACKUP_INTERVAL_MINUTES ?? 60);
 const VERIFY_HOUR = Number(process.env.BACKUP_VERIFY_HOUR ?? 4);
 
-async function takeSnapshot(): Promise<string> {
-  const databaseFile = databaseFileFromUrl(process.env.DATABASE_URL);
-  if (!existsSync(databaseFile)) throw new Error(`Base introuvable : ${databaseFile}`);
-
-  mkdirSync(BACKUP_DIR, { recursive: true });
-  const name = snapshotName(new Date());
-  // Chemin absolu : VACUUM INTO résout un relatif depuis le cwd du processus,
-  // Prisma depuis le schéma — deux références différentes, donc aucun relatif
-  const target = resolve(snapshotPath(BACKUP_DIR, name));
-
-  // VACUUM INTO refuse d'écraser un fichier existant : pas d'écrasement
-  // accidentel d'une sauvegarde
-  const client = new PrismaClient();
-  try {
-    // Instantané cohérent même si l'application écrit pendant l'opération
-    await client.$executeRawUnsafe(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
-  } finally {
-    await client.$disconnect();
-  }
-
-  // Une sauvegarde non vérifiée n'est qu'une intention de sauvegarde
-  const inspection = await inspectSnapshot(target);
-  if (inspection.integrity !== 'ok') {
-    unlinkSync(target);
-    throw new Error(`Instantané corrompu (${inspection.integrity}) — fichier supprimé`);
-  }
-
-  const sizeKb = Math.round(statSync(target).size / 1024);
-  const existing = readdirSync(BACKUP_DIR);
-  const obsolete = selectSnapshotsToDelete(existing, DEFAULT_RETENTION);
-  for (const file of obsolete) unlinkSync(snapshotPath(BACKUP_DIR, file));
-
-  // Événement structuré : il remonte dans Kibana comme les logs applicatifs
-  // (dashboard « Sauvegardes », § 7.3)
-  logger.info('backup_snapshot', {
-    component: 'backup',
-    snapshot: name,
-    sizeKb,
-    organizations: inspection.organizations,
-    contacts: inspection.contacts,
-    kept: existing.length - obsolete.length,
-    deleted: obsolete.length,
-  });
-  return name;
-}
-
-/**
- * Contrôle quotidien de restaurabilité. Lève si l'instantané n'est pas
- * restaurable : un contrôle qui se contenterait d'afficher son résultat ne
- * vaudrait rien, personne ne lisant les journaux d'un service qui va bien.
- */
-async function verifyDaily(): Promise<string> {
-  const latest = latestSnapshot(readdirSync(BACKUP_DIR));
-  if (!latest) throw new Error('contrôle impossible : aucun instantané');
-
-  const inspection = await inspectSnapshot(snapshotPath(BACKUP_DIR, latest));
-  if (inspection.integrity !== 'ok') {
-    throw new Error(`instantané ${latest} NON restaurable (${inspection.integrity})`);
-  }
-  logger.info('backup_verified', {
-    component: 'backup',
-    snapshot: latest,
-    detail: describeInspection(inspection),
-    organizations: inspection.organizations,
-    contacts: inspection.contacts,
-  });
-  return latest;
-}
-
 const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
+
+/** Journalise le résultat d'une sauvegarde, planifiée ou lancée à la main. */
+function report(result: { snapshot?: SnapshotResult; verified?: VerificationResult; failure?: string }): void {
+  if (result.failure) {
+    // Événement d'erreur structuré : il remonte dans Kibana, dashboard
+    // « Sauvegardes » (§ 7.3)
+    logger.error('backup_failed', { component: 'backup', reason: result.failure });
+    return;
+  }
+
+  const snapshot = result.snapshot;
+  if (snapshot) {
+    logger.info('backup_snapshot', {
+      component: 'backup',
+      snapshot: snapshot.name,
+      sizeKb: snapshot.sizeKb,
+      organizations: snapshot.inspection.organizations,
+      contacts: snapshot.inspection.contacts,
+      kept: snapshot.kept,
+      deleted: snapshot.deleted,
+    });
+  }
+  if (result.verified) {
+    logger.info('backup_verified', {
+      component: 'backup',
+      snapshot: result.verified.snapshot,
+      detail: describeInspection(result.verified.inspection),
+    });
+  }
+}
 
 /**
  * Boucle du service `backup` : alignée sur l'horloge (et non sur l'instant de
@@ -119,51 +71,26 @@ async function loop(): Promise<void> {
 
   for (;;) {
     await sleep(millisecondsUntilNextRun(new Date(), INTERVAL_MINUTES));
-
-    const previous = readState(BACKUP_DIR);
-    try {
-      await takeSnapshot();
-      const verified = new Date().getUTCHours() === VERIFY_HOUR ? await verifyDaily() : undefined;
-
-      writeState(BACKUP_DIR, {
-        lastRun: new Date().toISOString(),
-        status: 'ok',
+    report(
+      await runScheduledBackup({
+        databaseFile: databaseFileFromUrl(process.env.DATABASE_URL),
+        backupDir: BACKUP_DIR,
         intervalMinutes: INTERVAL_MINUTES,
-        // On conserve la trace du dernier instantané réellement vérifié : c'est
-        // celui vers lequel se replier en cas de doute (§ 7.3)
-        lastVerified: verified ?? previous?.lastVerified,
-        lastVerifiedAt: verified ? new Date().toISOString() : previous?.lastVerifiedAt,
-      });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      // Une erreur ponctuelle ne doit pas tuer le planificateur : les
-      // sauvegardes suivantes ont toutes leurs chances de réussir. En revanche
-      // l'incident est écrit dans l'état, ce qui rend le service `unhealthy`.
-      logger.error('backup_failed', { component: 'backup', reason: message });
-      writeState(BACKUP_DIR, {
-        lastRun: new Date().toISOString(),
-        status: 'failed',
-        message,
-        intervalMinutes: INTERVAL_MINUTES,
-        lastVerified: previous?.lastVerified,
-        lastVerifiedAt: previous?.lastVerifiedAt,
-      });
-    }
+        verifyHour: VERIFY_HOUR,
+      })
+    );
   }
-}
-
-/** Verdict lisible par Docker : code de sortie 0 (sain) ou 1 (défaillant). */
-function reportHealth(): void {
-  const verdict = evaluateHealth(readState(BACKUP_DIR), new Date());
-  console.log(verdict.reason);
-  if (!verdict.healthy) process.exit(1);
 }
 
 async function main(): Promise<void> {
+  // Verdict lisible par Docker : code de sortie 0 (sain) ou 1 (défaillant)
   if (process.argv.includes('--health')) {
-    reportHealth();
+    const verdict = evaluateHealth(readState(BACKUP_DIR), new Date());
+    console.log(verdict.reason);
+    if (!verdict.healthy) process.exit(1);
     return;
   }
+
   if (process.argv.includes('--loop')) {
     await loop();
     return;
@@ -171,9 +98,18 @@ async function main(): Promise<void> {
 
   // Passe unique : l'état est mis à jour aussi, pour que le healthcheck reflète
   // une sauvegarde lancée à la main
-  const name = await takeSnapshot();
-  const state: BackupState = { lastRun: new Date().toISOString(), status: 'ok', intervalMinutes: INTERVAL_MINUTES };
-  writeState(BACKUP_DIR, { ...readState(BACKUP_DIR), ...state, lastVerified: name });
+  const snapshot = await createSnapshot({
+    databaseFile: databaseFileFromUrl(process.env.DATABASE_URL),
+    backupDir: BACKUP_DIR,
+  });
+  report({ snapshot });
+  writeState(BACKUP_DIR, {
+    ...readState(BACKUP_DIR),
+    lastRun: new Date().toISOString(),
+    status: 'ok',
+    intervalMinutes: INTERVAL_MINUTES,
+    lastVerified: snapshot.name,
+  });
 }
 
 void main().catch((error: unknown) => {

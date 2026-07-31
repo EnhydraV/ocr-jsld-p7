@@ -28,6 +28,9 @@ export default defineConfig({
         'src/services/**/*.ts': businessThreshold,
         'src/repositories/**/*.ts': businessThreshold,
         'src/models/**/*.ts': businessThreshold,
+        // Sauvegarde et restauration : la donnée est irremplaçable (§ 7), ce
+        // code mérite le même seuil que le métier
+        'src/lib/backup*.ts': businessThreshold,
       },
     },
   },
