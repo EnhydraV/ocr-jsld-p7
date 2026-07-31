@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { buildDashboard, buildPanels } from './kibana/buildDashboard.js';
+import { buildBackupDashboard, buildBackupObjects } from './kibana/buildBackupDashboard.js';
 import { buildLogsDashboard, buildLogsObjects } from './kibana/buildLogsDashboard.js';
 import { KIBANA_URL } from './kibana/client.js';
 import { DATA_VIEWS, ensureDataView } from './kibana/dataViews.js';
@@ -65,10 +66,13 @@ async function runSetup(fromFile: boolean): Promise<void> {
     buildDashboard(panels),
     ...logsObjects,
     buildLogsDashboard(),
+    ...buildBackupObjects(),
+    buildBackupDashboard(),
   ]);
-  console.log(`${created} objet(s) créés depuis le code (2 dashboards)`);
-  console.log(`Pipeline : ${KIBANA_URL}/app/dashboards#/view/orion-pipeline-dashboard`);
-  console.log(`Logs     : ${KIBANA_URL}/app/dashboards#/view/orion-logs-dashboard`);
+  console.log(`${created} objet(s) créés depuis le code (3 dashboards)`);
+  console.log(`Pipeline    : ${KIBANA_URL}/app/dashboards#/view/orion-pipeline-dashboard`);
+  console.log(`Logs        : ${KIBANA_URL}/app/dashboards#/view/orion-logs-dashboard`);
+  console.log(`Sauvegardes : ${KIBANA_URL}/app/dashboards#/view/orion-backup-dashboard`);
 }
 
 async function main(): Promise<void> {

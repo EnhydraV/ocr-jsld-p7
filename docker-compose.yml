@@ -19,6 +19,48 @@ services:
     volumes:
       # Persistance de la base SQLite (survit aux recréations ; détruit par down -v)
       - orion-db:/app/data
+      # Sauvegardes déposées HORS du volume de données : un `down -v` détruit la
+      # base, pas ses sauvegardes (§ 7). Répertoire gitignoré.
+      - ./backups:/app/backups
+    networks:
+      - orion
+
+  # Planificateur de sauvegarde (§ 7.2). Réutilise l'image du serveur : elle
+  # contient déjà Prisma et les scripts compilés, donc aucune image dédiée.
+  # Volontairement SANS socket Docker monté (ce serait un équivalent root sur
+  # l'hôte) : le conteneur accède directement au volume de données.
+  backup:
+    container_name: orion-backup
+    image: ghcr.io/enhydrav/ocr-jsld-p7-server:latest
+    # L'entrypoint du serveur joue les migrations : on ne le veut pas ici
+    entrypoint: ["node", "dist/scripts/backup.js", "--loop"]
+    environment:
+      - DATABASE_URL=file:/app/data/orion.db
+      - BACKUP_DIR=/app/backups
+      # Instantané horaire ; contrôle de restaurabilité une fois par jour
+      - BACKUP_INTERVAL_MINUTES=${BACKUP_INTERVAL_MINUTES:-60}
+      - BACKUP_VERIFY_HOUR=${BACKUP_VERIFY_HOUR:-4}
+      # Mêmes journaux structurés que l'application : les sauvegardes deviennent
+      # observables dans Kibana (dashboard « Sauvegardes », § 7.3)
+      - LOGSTASH_HOST=${LOGSTASH_HOST:-}
+      - LOGSTASH_PORT=${LOGSTASH_PORT:-5000}
+    volumes:
+      - orion-db:/app/data
+      - ./backups:/app/backups
+    depends_on:
+      # Le schéma doit exister (migrations jouées par l'entrypoint du serveur)
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+    # Rend visible un planificateur en défaut : sauvegarde en échec, instantané
+    # non restaurable, ou aucune sauvegarde depuis deux cycles (§ 7.3). Sans
+    # cela, l'échec ne serait qu'une ligne de journal que personne ne lit.
+    healthcheck:
+      test: ["CMD", "node", "dist/scripts/backup.js", "--health"]
+      interval: 5m
+      timeout: 15s
+      retries: 2
+      start_period: 90s
     networks:
       - orion
 

@@ -39,6 +39,9 @@ Thumbs.db
 # Testing
 coverage/
 
+# Sauvegardes de la base (§ 7) : jamais dans le dépôt
+backups/
+
 # Cache des réponses de l'API GitHub (scripts/dora-metrics.ts)
 .dora-cache/
 *.lcov

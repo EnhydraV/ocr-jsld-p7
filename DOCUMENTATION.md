@@ -536,8 +536,8 @@ URL inconnue saisie dans le navigateur ne produit **pas** de 404 côté API - ng
 `index.html` pour tout le reste (fallback SPA, § 3.1) ; les erreurs applicatives se cherchent donc dans Kibana avec
 `status >= 400`, non en filtrant sur le niveau de log.
 
-**Captures** - `docs/dashboard-pipeline-dora.png` et `docs/dashboard-logs-applicatifs.png` (dashboards produits par
-`npm run kibana:setup` sur une stack ELK 8.19).
+**Captures** - `docs/dashboard-pipeline-dora.png`, `docs/dashboard-logs-applicatifs.png` et
+`docs/dashboard-sauvegardes.png` (les trois dashboards produits par `npm run kibana:setup` sur une stack ELK 8.19).
 
 **Alertes** - Aucun seuil d'alerte n'est aujourd'hui automatisé : les valeurs proposées en § 6.2 et les alertes
 applicatives (taux de 5xx, temps de réponse) restent à instrumenter. Priorité recommandée, cohérente avec le point
@@ -548,21 +548,223 @@ d'affiner des seuils de performance sur un échantillon encore trop petit.
 
 ### 7.1 Ce qui doit être sauvegardé
 
-- Données (si applicable)
-- Fichiers de configuration
-- Artefacts de build
+Le principe de tri : **ce qui est reproductible n'a pas besoin d'être sauvegardé, ce qui est unique si.**
+
+| Élément | Criticité | Pourquoi | Traitement |
+|---|---|---|---|
+| **Base SQLite** (`orion.db`, volume `orion-db`) | **Vitale** | Seule donnée **irremplaçable** du projet : elle n'existe nulle part ailleurs et aucun build ne la régénère. Un `docker compose down -v` suffit à la détruire (§ 3.2). | Sauvegarde quotidienne (§ 7.2) |
+| **Secrets et configuration d'exécution** (`.env`, secret `SONAR_TOKEN`) | **Vitale** | Volontairement **hors du dépôt** (gitignorés) : ils ne sont donc *pas* couverts par GitHub, contrairement au reste. C'est le trou de couverture le plus facile à oublier. | Gestionnaire de mots de passe ; `.env.example` versionné documente les clés attendues |
+| Code source, migrations Prisma, workflows, dashboards Kibana | Élevée | **Déjà répliqués** : git est distribué, chaque clone contient l'intégralité de l'historique. Les dashboards sont du code depuis le § 6, les migrations sont versionnées. | Miroir git + bundle (§ 7.2) |
+| Historique des exécutions GitHub Actions | Moyenne | Source des métriques DORA (§ 6.1), non contenue dans le dépôt. | Matérialisée dans Elasticsearch par `npm run dora:index` ; cache JSON brut dans `tools/.dora-cache` |
+| Index Elasticsearch (logs applicatifs) | Faible | Données d'observation à durée de vie courte, volontairement jetables (un index par jour, purge par suppression d'index). | Aucune sauvegarde - assumé |
+| Images Docker publiées sur GHCR | Faible | **Reconstructibles** à l'identique depuis un commit (`docker compose up --build`). | Aucune sauvegarde |
+| Artefacts de build (`dist/`) | Nulle | Produits déterministes du code source. | Aucune sauvegarde |
 
 ### 7.2 Procédure de sauvegarde
 
-- Format
-- Fréquence
-- Outils utilisés (scripts, commandes simples)
+**Base de données - pourquoi aucun conteneur annexe n'est nécessaire.** SQLite est une *bibliothèque*, pas un
+serveur : aucun processus distant ne peut « dumper » la base, mais tout processus ayant accès au fichier peut en
+prendre un instantané. Deux conséquences :
+
+- **copier le fichier à chaud (`cp`) est dangereux** : la copie peut capturer un état déchiré si une écriture est en
+  cours, et en mode WAL elle omettrait les fichiers `-wal`/`-shm` ;
+- **`VACUUM INTO` (ou `sqlite3 .backup`) est sûr à chaud** : SQLite garantit un instantané cohérent même sous
+  écritures concurrentes - vérifié sur ce projet, instantané valide en 15 ms avec un writer actif en parallèle.
+
+Comme l'image du serveur embarque déjà Prisma (nécessaire aux migrations au démarrage), la sauvegarde est un simple
+script de l'application : **ni CLI `sqlite3` à ajouter à l'image, ni sidecar, ni conteneur permanent.**
+
+| Élément | Format | Fréquence | Commande |
+|---|---|---|---|
+| Base SQLite | instantané `.db` cohérent, vérifié par `PRAGMA integrity_check` | **horaire**, par le service `backup` de la stack | automatique ; à la demande : `docker compose exec -T server node dist/scripts/backup.js` |
+| Contrôle de restaurabilité | restauration à blanc (§ 7.3) | quotidienne (4 h UTC), par le même service | automatique ; à la demande : `docker compose exec -T server node dist/scripts/restore.js --verify` |
+| Base, stack arrêtée | idem | à la demande (avant une migration risquée) | `docker run --rm -v orion-db:/app/data -v "$PWD/backups":/app/backups ghcr.io/enhydrav/ocr-jsld-p7-server:latest node dist/scripts/backup.js` |
+| Dépôt (historique complet) | miroir git | hebdomadaire | `git push --mirror <second-hébergeur>` |
+| Dépôt (archive froide) | fichier `.bundle` | hebdomadaire | `git bundle create orion-$(date +%F).bundle --all` |
+| Secrets | entrées de gestionnaire de mots de passe | à chaque changement | manuel, documenté |
+
+**Rétention** - le script applique une politique **grand-père / père / fils** identique dans son esprit à
+`automysqlbackup`, avec un palier horaire en plus : les **24 dernières heures**, les **7 derniers jours**, un
+instantané par semaine sur **4 semaines**, puis un par mois sur **12 mois**. C'est l'algorithme de `restic forget` (le
+plus récent de chaque période), et un même fichier peut satisfaire plusieurs paliers. Le plafond est donc de
+**47 instantanés**, quelle que soit la durée de vie du système. Mesuré sur un jeu simulé de 720 instantanés horaires
+(30 jours) : **32 conservés, 690 supprimés**. Un fichier au nom non reconnu n'est **jamais** supprimé, ce qui protège
+les dumps manuels et les sauvegardes créées avant restauration.
+
+Le palier horaire ramène la perte de données maximale de 24 h à **1 h** sur la journée écoulée, ce qui couvre le cas
+le plus fréquent : l'erreur de saisie repérée le jour même. Le coût est négligeable ici - `VACUUM INTO` réécrit la base
+entière, soit quelques dizaines de kilo-octets et une quinzaine de millisecondes ; la question se poserait autrement
+sur une base de plusieurs giga-octets, où l'on préférerait alors Litestream.
+
+**Planification - service `backup` du compose (retenu).** La sauvegarde est planifiée par un **service dédié de la
+stack**, et non par une tâche à configurer sur chaque machine : le calendrier vit ainsi **dans le dépôt**, versionné et
+relu comme du code, et fonctionne à l'identique sous Linux, macOS et Windows. C'est le même raisonnement que pour les
+dashboards (§ 6.1) : ce qui est configuré à la main sur un poste n'est pas reproductible.
+
+```yaml
+  backup:
+    image: ghcr.io/enhydrav/ocr-jsld-p7-server:latest
+    entrypoint: ["node", "dist/scripts/backup.js", "--loop"]
+    environment:
+      - DATABASE_URL=file:/app/data/orion.db
+      - BACKUP_DIR=/app/backups
+      - BACKUP_INTERVAL_MINUTES=60
+    volumes:
+      - orion-db:/app/data
+      - ./backups:/app/backups
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+```
+
+Quatre points de conception :
+
+- **Aucune image dédiée** : le service réutilise celle du serveur, qui contient déjà Prisma et les scripts compilés.
+  Elle n'y déclare pas de `build:`, pour ne pas construire deux fois la même image ; `docker compose up --build` la
+  construit une fois via le service `server` et les deux la partagent.
+- **Aucun socket Docker monté.** La tentation serait de faire lancer `docker compose exec` par le conteneur, ce qui
+  exigerait `/var/run/docker.sock` : or donner accès au socket Docker équivaut à donner les droits **root sur l'hôte**.
+  Le service accède donc directement au volume de données, comme n'importe quel autre client SQLite.
+- **`entrypoint` remplacé** : celui du serveur applique les migrations, ce qui n'a pas de sens ici. Le service attend
+  d'ailleurs que le serveur soit sain (`depends_on`), donc que les migrations soient déjà passées.
+- **Cadence alignée sur l'horloge**, pas sur l'instant de démarrage : un conteneur relancé à 10 h 47 sauvegarde à
+  11 h 00 et non à 11 h 47. Une erreur ponctuelle (base verrouillée, disque plein) est tracée sans tuer le
+  planificateur, qui retentera au tour suivant.
+
+Limite honnête, commune à cette solution et à `cron` : **une exécution manquée n'est pas rattrapée**. Si la machine est
+éteinte à l'heure prévue, cet instantané-là n'existera pas. Seule une minuterie `systemd` (`Persistent=true`) rattrape
+le tir - c'est l'unique avantage qu'elle conserve sur le service embarqué, et la raison pour laquelle les variantes
+hôte restent documentées ci-dessous.
+
+**Variantes hôte** (si l'on préfère ne pas faire tourner de service supplémentaire, ou si l'on veut le rattrapage) :
+
+*Linux / macOS - cron* (`crontab -e`) :
+
+```cron
+# Sauvegarde horaire de la base Orion (§ 7.2)
+5 * * * * cd /srv/orion && /usr/bin/docker compose exec -T server node dist/scripts/backup.js >> /var/log/orion-backup.log 2>&1
+# Contrôle quotidien de restaurabilité (§ 7.3)
+30 4 * * * cd /srv/orion && /usr/bin/docker compose exec -T server node dist/scripts/restore.js --verify >> /var/log/orion-backup.log 2>&1
+```
+
+Trois précautions qui font échouer la moitié des tâches planifiées : l'option **`-T`** est indispensable
+(`docker compose exec` alloue un pseudo-terminal par défaut, or cron n'en fournit aucun) ; les **chemins doivent être
+absolus**, l'environnement de cron étant minimal ; et la **redirection des sorties** est ce qui permettra de constater
+l'échec - une sauvegarde silencieuse est le pendant exact du nightly que personne ne regarde (§ 6.3).
+
+*Linux - minuterie systemd*, préférable à cron sur un serveur : journalisation dans `journalctl` et surtout
+`Persistent=true`, qui **rattrape l'exécution manquée** si la machine était éteinte.
+
+```ini
+# /etc/systemd/system/orion-backup.service
+[Unit]
+Description=Sauvegarde de la base Orion
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/orion
+ExecStart=/usr/bin/docker compose exec -T server node dist/scripts/backup.js
+
+# /etc/systemd/system/orion-backup.timer
+[Unit]
+Description=Sauvegarde horaire de la base Orion
+[Timer]
+OnCalendar=hourly
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+
+Activation : `sudo systemctl enable --now orion-backup.timer`, contrôle : `systemctl list-timers orion-backup*`.
+
+*Windows - Planificateur de tâches* : créer une tâche déclenchée toutes les heures, action
+`docker` avec les arguments `compose exec -T server node dist/scripts/backup.js` et le dépôt comme
+répertoire de démarrage. Cocher « Exécuter même si l'utilisateur n'est pas connecté » ; si Docker Desktop n'est pas
+démarré, la tâche échouera - c'est la limite de cet environnement, à surveiller.
+
+**Destination** - les instantanés sont écrits dans `./backups` sur l'hôte, monté dans le conteneur : **hors du volume
+`orion-db`**, pour qu'un `down -v` détruise la base sans emporter ses sauvegardes. Sauvegarder au même endroit que la
+donnée est l'erreur classique à ne pas commettre. Ce répertoire est gitignoré (données réelles) et doit être **recopié
+hors de la machine** (disque externe, stockage objet) : une sauvegarde sur le même disque que la production ne protège
+que des erreurs humaines, pas d'une panne matérielle.
+
+**Alternatives évaluées** - `automysqlbackup` ne concerne que MySQL et il n'existe pas d'équivalent maintenu pour
+SQLite, d'où le script maison (30 lignes de logique, testée). Deux outils sont pertinents si les exigences montent :
+**restic** (chiffrement, déduplication, envoi direct vers un stockage objet distant, rétention `--keep-daily/weekly/monthly`
+- même politique, en plus robuste), et surtout **Litestream**, conçu spécifiquement pour SQLite : il réplique le
+journal WAL en continu vers un stockage objet et permet une restauration à un instant donné, ramenant la perte de
+données maximale de 24 h à quelques secondes. C'est **le** choix si l'objectif de point de reprise devient serré ;
+c'est aussi le seul cas où un sidecar est justifié, Litestream tournant en processus permanent aux côtés de
+l'application. Écarté ici : pour un CRM interne à faible volumétrie d'écritures, perdre au pire une journée de saisie
+est acceptable, et la simplicité a été préférée.
 
 ### 7.3 Procédure de restauration
 
-- Scénario d'incident
-- Étapes pour revenir à une version stable
-- Limitations éventuelles
+**Action automatisée de vérification** - `npm run backup:verify` (ou `node dist/scripts/restore.js --verify`)
+effectue une **restauration à blanc** : il copie le dernier instantané dans un emplacement temporaire, l'ouvre,
+contrôle son intégrité et compte les enregistrements, puis le supprime - sans jamais toucher à la base en service.
+C'est ce contrôle qui distingue une sauvegarde d'une simple intention de sauvegarde. Le service `backup` l'exécute
+automatiquement une fois par jour ; il est aussi lançable à la demande.
+
+**Que se passe-t-il si le contrôle échoue ?** La question est décisive : un contrôle dont l'échec passerait inaperçu ne
+vaudrait pas mieux que pas de contrôle - c'est exactement le travers relevé au § 6.3 avec les exécutions nocturnes
+restées rouges 60 h. L'échec est donc signalé **à trois niveaux**, du plus discret au plus visible :
+
+1. **Journal structuré** - l'événement `backup_failed` est émis au niveau `error` avec sa cause, via le même logger que
+   l'application : il part donc dans Elasticsearch et apparaît dans le dashboard **« Sauvegardes »** (compteur d'échecs
+   et journal détaillé). Le dashboard porte aussi une chronologie horaire où **un creux signale une sauvegarde
+   manquée** - l'absence devient visible, alors qu'elle n'émet par nature aucun message.
+2. **État persistant + healthcheck** - le résultat est écrit dans `backups/backup-state.json`, que le healthcheck du
+   service relit toutes les 5 minutes. Le conteneur passe **`unhealthy`** dans `docker compose ps` si la dernière
+   sauvegarde a échoué, si l'instantané n'est pas restaurable, **ou si aucune sauvegarde n'a eu lieu depuis deux
+   cycles** - ce dernier cas attrapant le planificateur silencieusement bloqué, le plus dangereux de tous.
+3. **Code de sortie** - en usage manuel ou par tâche planifiée sur l'hôte, la commande **sort en erreur** (code 1), ce
+   que cron et systemd remontent.
+
+Le planificateur, lui, **continue de tourner** : un échec ponctuel (base momentanément verrouillée, disque plein) ne
+doit pas priver l'application de ses sauvegardes suivantes. L'état conserve par ailleurs le nom du **dernier instantané
+vérifié avec succès** (`lastVerified`) : c'est celui vers lequel se replier sans hésitation.
+
+**Conduite à tenir devant un échec de contrôle** - un instantané non restaurable signifie le plus souvent que la
+**base source est elle-même corrompue**, puisque `VACUUM INTO` en est une copie fidèle. Dans l'ordre : vérifier la base
+en service (`PRAGMA integrity_check` via `restore.js --verify --from <base>`), vérifier l'espace disque et l'état du
+support, puis restaurer depuis le dernier instantané `lastVerified` - la rétention horaire garantit qu'il en existe un
+antérieur à l'incident. Ne pas se contenter de relancer la sauvegarde : elle reproduirait la corruption.
+
+**Scénario d'incident : suppression accidentelle de données** (le plus probable - un `down -v` de trop, une
+suppression en masse, une migration fautive). Étapes :
+
+1. **Arrêter l'application** : `docker compose stop server` - indispensable, sinon le serveur écrit dans le fichier
+   pendant son remplacement.
+2. **Choisir l'instantané** : `ls backups/` (nommage horodaté, l'ordre alphabétique est l'ordre chronologique).
+3. **Vérifier avant d'agir** : `npm run backup:verify` confirme que l'instantané est restaurable et affiche les
+   volumes qu'il contient - on sait donc ce que l'on va récupérer *avant* de remplacer quoi que ce soit.
+4. **Restaurer** : `node dist/scripts/restore.js --yes` (ou `--from backups/<instantané>` pour un point précis). Le
+   script sauvegarde l'état courant sous `pre-restore-*` **avant** de le remplacer : la restauration est réversible.
+   Il supprime aussi les journaux `-wal`/`-shm` résiduels, faute de quoi SQLite rejouerait le journal de l'ancienne
+   base par-dessus la base restaurée.
+5. **Redémarrer et contrôler** : `docker compose start server`, puis vérifier `/api/health` et l'application.
+
+La commande refuse de s'exécuter sans `--yes` : une action destructive ne doit jamais être le comportement par défaut.
+
+**Scénario : perte du dépôt GitHub.** Distinguer deux cas. *Indisponibilité temporaire* : sans conséquence
+immédiate - git étant distribué, tout clone local contient l'historique complet, et `docker compose up --build`
+fonctionne sans réseau ; seuls la CI, la publication d'images et les releases sont suspendus. *Perte définitive*
+(dépôt ou compte supprimé) : restauration depuis le miroir (`git clone <second-hébergeur>`) ou depuis un bundle
+(`git clone orion-2026-07-31.bundle`), puis `git remote set-url` vers le nouvel hébergeur. **Ce que le miroir ne
+contient pas**, et qu'il faut accepter de perdre : les issues, les discussions de pull requests, l'historique des
+exécutions Actions (d'où l'intérêt de son archivage dans Elasticsearch, § 7.1) et les packages publiés - ces derniers
+étant reconstructibles depuis le code.
+
+**Limitations assumées** :
+
+- **Perte de données maximale d'une heure** (fréquence horaire), et de 24 h pour un incident détecté au-delà d'une
+  journée : acceptée pour un usage interne, à réduire à quelques secondes avec Litestream si le besoin évolue.
+- La restauration exige un **arrêt de service** de quelques secondes ; aucune bascule à chaud n'est prévue.
+- Les sauvegardes ne sont **pas chiffrées** : elles contiennent des données nominatives (contacts), leur copie hors
+  machine doit donc viser un support chiffré - `restic` apporterait le chiffrement nativement.
+- La copie hors machine reste **manuelle** : c'est la première automatisation à ajouter, l'absence de copie distante
+  étant la faiblesse résiduelle de ce plan.
 
 ## 8. Plan de mise à jour
 
