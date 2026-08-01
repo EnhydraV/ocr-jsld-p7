@@ -122,6 +122,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Préparer le répertoire des sauvegardes (bind mount, § 7.2)
+        # Gitignoré, donc absent du checkout. Si Docker le crée lui-même, il
+        # appartient à root et le service backup (uid 1000) ne peut pas y
+        # écrire : sauvegarde en échec → conteneur unhealthy → --wait échoue.
+        # 0777 : le runner (uid 1001) n'est pas l'uid du conteneur (1000).
+        run: mkdir -p backups && chmod 0777 backups
       - name: Build des images
         run: docker compose build
       - name: Smoke test — démarrage de la stack complète

@@ -80,6 +80,27 @@ describe('runScheduledBackup', () => {
     });
   });
 
+  // Cas vu en CI : bind mount `./backups` créé root par Docker sur un clone
+  // frais → la MÊME EACCES fait échouer la sauvegarde ET l'écriture de l'état.
+  // Le planificateur doit survivre à l'impossibilité de signaler son échec.
+  it('never throws even when the state itself cannot be written', async () => {
+    const { mkdirSync, chmodSync } = await import('node:fs');
+    mkdirSync(backupDir, { recursive: true });
+    chmodSync(backupDir, 0o555);
+
+    try {
+      const result = await run();
+
+      expect(result.failure).toMatch(/EACCES|permission/i);
+      expect(result.failure).toMatch(/état non enregistré/);
+      // Aucun état écrit : le healthcheck reste défaillant, c'est voulu
+      expect(readState(backupDir)).toBeNull();
+    } finally {
+      // Rend le répertoire supprimable par le afterEach
+      chmodSync(backupDir, 0o755);
+    }
+  });
+
   it('carries the previous verification forward on a run that does not verify', async () => {
     await run({ now: new Date('2026-07-31T04:00:00Z') });
     const verifiedBefore = readState(backupDir)?.lastVerified;

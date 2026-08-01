@@ -64,7 +64,18 @@ export async function runScheduledBackup(options: ScheduledRunOptions): Promise<
       lastVerified: previous?.lastVerified,
       lastVerifiedAt: previous?.lastVerifiedAt,
     };
-    writeState(backupDir, state);
+    try {
+      writeState(backupDir, state);
+    } catch (stateError: unknown) {
+      // Répertoire non inscriptible (EACCES sur un bind mount créé root, disque
+      // plein…) : la MÊME cause fait échouer la sauvegarde ET l'écriture de
+      // l'état. Sans ce garde-fou, le planificateur mourait au moment précis où
+      // il tentait de signaler l'incident — vu en CI sur un clone frais. Le
+      // healthcheck reste défaillant (aucun état écrit), c'est le comportement
+      // voulu ; l'échec est remonté à l'appelant, qui le journalise.
+      const stateFailure = stateError instanceof Error ? stateError.message : String(stateError);
+      return { state, failure: `${failure} (état non enregistré : ${stateFailure})` };
+    }
     return { state, failure };
   }
 }
