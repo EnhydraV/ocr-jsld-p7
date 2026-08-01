@@ -69,6 +69,21 @@ async function loop(): Promise<void> {
     verifyHourUtc: VERIFY_HOUR,
   });
 
+  // Sauvegarde immédiate au démarrage, avant l'alignement sur l'horloge : sur
+  // un volume vierge l'état n'existe pas encore, et le healthcheck (--health)
+  // répondrait « défaillant » jusqu'au prochain créneau — jusqu'à une heure
+  // sur une installation neuve (bloquait le `--wait` du smoke test CI).
+  // Accessoirement, une stack qui démarre est protégée tout de suite ; la
+  // rétention horaire absorbe le doublon.
+  report(
+    await runScheduledBackup({
+      databaseFile: databaseFileFromUrl(process.env.DATABASE_URL),
+      backupDir: BACKUP_DIR,
+      intervalMinutes: INTERVAL_MINUTES,
+      verifyHour: VERIFY_HOUR,
+    })
+  );
+
   for (;;) {
     await sleep(millisecondsUntilNextRun(new Date(), INTERVAL_MINUTES));
     report(

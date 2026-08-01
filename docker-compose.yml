@@ -60,7 +60,13 @@ services:
       interval: 5m
       timeout: 15s
       retries: 2
+      # Sans start_interval, la PREMIÈRE sonde partirait à t+5m (interval) :
+      # trop tard pour le `--wait --wait-timeout 120` du smoke test CI. Pendant
+      # start_period, Docker sonde toutes les 5 s ; la sauvegarde de démarrage
+      # (cf. --loop) rend le verdict sain en quelques secondes. Requiert
+      # Docker Engine >= 25.
       start_period: 90s
+      start_interval: 5s
     networks:
       - orion
 
