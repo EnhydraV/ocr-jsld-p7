@@ -18,6 +18,7 @@ import { basename, dirname, join } from 'node:path';
 import { buildDashboard, buildPanels } from './kibana/buildDashboard.js';
 import { buildBackupDashboard, buildBackupObjects } from './kibana/buildBackupDashboard.js';
 import { buildLogsDashboard, buildLogsObjects } from './kibana/buildLogsDashboard.js';
+import { buildVulnDashboard, buildVulnObjects } from './kibana/buildVulnDashboard.js';
 import { KIBANA_URL } from './kibana/client.js';
 import { DATA_VIEWS, ensureDataView } from './kibana/dataViews.js';
 import { createObjects, exportDashboards, importObjects } from './kibana/savedObjects.js';
@@ -68,11 +69,14 @@ async function runSetup(fromFile: boolean): Promise<void> {
     buildLogsDashboard(),
     ...buildBackupObjects(),
     buildBackupDashboard(),
+    ...buildVulnObjects(),
+    buildVulnDashboard(),
   ]);
-  console.log(`${created} objet(s) créés depuis le code (3 dashboards)`);
-  console.log(`Pipeline    : ${KIBANA_URL}/app/dashboards#/view/orion-pipeline-dashboard`);
-  console.log(`Logs        : ${KIBANA_URL}/app/dashboards#/view/orion-logs-dashboard`);
-  console.log(`Sauvegardes : ${KIBANA_URL}/app/dashboards#/view/orion-backup-dashboard`);
+  console.log(`${created} objet(s) créés depuis le code (4 dashboards)`);
+  console.log(`Pipeline       : ${KIBANA_URL}/app/dashboards#/view/orion-pipeline-dashboard`);
+  console.log(`Logs           : ${KIBANA_URL}/app/dashboards#/view/orion-logs-dashboard`);
+  console.log(`Sauvegardes    : ${KIBANA_URL}/app/dashboards#/view/orion-backup-dashboard`);
+  console.log(`Vulnérabilités : ${KIBANA_URL}/app/dashboards#/view/orion-vulns-dashboard`);
 }
 
 async function main(): Promise<void> {

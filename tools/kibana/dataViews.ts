@@ -13,13 +13,19 @@ export interface DataViewSpec {
   timeFieldName: string;
 }
 
-/** Les deux natures de mesure restent séparées (§ 6.2) : une data view chacune. */
+/** Chaque nature de mesure reste séparée (§ 6.2) : une data view chacune. */
 export const DATA_VIEWS: DataViewSpec[] = [
   { id: 'orion-logs', title: 'orion-logs-*', name: 'Logs applicatifs Orion', timeFieldName: '@timestamp' },
   {
     id: 'orion-pipeline-metrics',
     title: 'orion-pipeline-metrics',
     name: 'Métriques du pipeline CI/CD',
+    timeFieldName: '@timestamp',
+  },
+  {
+    id: 'orion-vulnerabilities',
+    title: 'orion-vulnerabilities',
+    name: 'Alertes Dependabot',
     timeFieldName: '@timestamp',
   },
 ];

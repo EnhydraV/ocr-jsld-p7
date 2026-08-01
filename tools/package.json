@@ -6,6 +6,7 @@
   "scripts": {
     "dora": "tsx dora-metrics.ts",
     "dora:index": "tsx dora-metrics.ts --index",
+    "deps:index": "tsx deps-alerts.ts",
     "kibana:setup": "tsx kibana-setup.ts",
     "kibana:import": "tsx kibana-setup.ts --from-file",
     "kibana:export": "tsx kibana-setup.ts --export",

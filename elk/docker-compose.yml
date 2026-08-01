@@ -50,6 +50,46 @@ services:
       # Raccordé au réseau applicatif : le back résout `logstash` (cf. §3.2)
       - orion
 
+  # Rafraîchit périodiquement les index « pull » (projections de l'API GitHub :
+  # métriques DORA + alertes Dependabot). Sans lui, ces deux dashboards se
+  # périment en silence — un index figé n'affiche pas « données anciennes »,
+  # il affiche « rien de nouveau », ce qui est un mensonge (§ 6.3). Même
+  # argument que le service backup (§ 7.2) : le calendrier vit dans le compose.
+  # Les dashboards logs/sauvegardes ne passent PAS par lui (poussés en continu
+  # par Logstash).
+  indexer:
+    container_name: orion-indexer
+    image: node:22-alpine
+    working_dir: /work
+    environment:
+      # REQUIS (elk/.env) : les alertes Dependabot ne se lisent pas anonymement.
+      # Un PAT `public_repo` d'un compte ayant accès en écriture suffit (§ 8).
+      - GITHUB_TOKEN=${GITHUB_TOKEN:?GITHUB_TOKEN requis dans elk/.env — lecture des alertes Dependabot}
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - INDEXER_INTERVAL_MINUTES=${INDEXER_INTERVAL_MINUTES:-60}
+    volumes:
+      # Lecture seule + copie de travail : un `npm ci` DANS le montage écraserait
+      # les node_modules de l'hôte avec des binaires musl (esbuild est natif)
+      - ../tools:/src:ro
+    entrypoint: ["/bin/sh", "-c"]
+    # `|| echo` : un échec ponctuel (GitHub ou ES indisponible) ne tue pas la
+    # boucle — leçon du planificateur de sauvegarde (§ 7.2)
+    command: >
+      "cp /src/package.json /src/package-lock.json /src/tsconfig.json /src/*.ts /work/ &&
+       cp -r /src/dora /src/vulns /work/ &&
+       npm ci --no-audit --silent &&
+       while true; do
+         npm run dora:index -- --refresh || echo 'dora:index en échec — tour suivant';
+         npm run deps:index || echo 'deps:index en échec — tour suivant';
+         sleep $$((INDEXER_INTERVAL_MINUTES * 60));
+       done"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - elk
+
   kibana:
     container_name: orion-kibana
     image: docker.elastic.co/kibana/kibana:8.19.19

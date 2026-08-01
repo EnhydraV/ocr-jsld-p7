@@ -51,20 +51,92 @@
 
 ### 2.1 Structure du pipeline
 
-- Étapes principales (build back-end, build front-end, tests, analyse SonarQube, déploiement local ou optionnel cloud)
-- Ordre d'exécution
-- Justification du choix des actions GitHub
+Le pipeline tient dans un seul workflow (`.github/workflows/ci.yml`), déclenché sur **quatre événements** dont la
+matrice est justifiée au § 4.2 : push (toute branche), pull request vers `main`, nightly (3 h 30 UTC) et
+déclenchement manuel (`workflow_dispatch`). Sept jobs le composent :
+
+```mermaid
+flowchart LR
+    subgraph validation["Validation — tout événement"]
+        server["server<br/>lint · typecheck · tests · build"]
+        client["client<br/>lint · typecheck · tests · build"]
+    end
+    subgraph controle["Contrôles"]
+        sonar["sonar — PR et main<br/>quality gate SonarQube Cloud"]
+        docker["docker — PR, main, nightly<br/>build images · smoke test · Trivy"]
+    end
+    subgraph livraison["Livraison — push sur main uniquement"]
+        release["release<br/>semantic-release : tag + release GitHub"]
+        publish["publish<br/>images GHCR (latest · SHA · vX.Y.Z)"]
+    end
+    audit["audit — nightly et manuel<br/>npm audit back + front"]
+    server --> sonar
+    client --> sonar
+    server --> release
+    client --> release
+    sonar --> release
+    docker --> release
+    release --> publish
+```
+
+**Ordre d'exécution.** `server` et `client` tournent **en parallèle** (aucune dépendance entre eux) et appliquent
+chacun la même gradation interne, du signal le plus rapide au plus lent : installation (`npm ci`), lint, vérification
+des types, tests avec couverture, build. Cette gradation est le *fail-fast* mesuré au § 6.2 : une erreur de syntaxe
+coûte une minute de CI, pas dix. `sonar` attend les deux (il consomme leurs **rapports de couverture**, transmis en
+artefacts) ; `docker` construit les images, démarre la stack complète (`--wait` sur les healthchecks - c'est ce smoke
+test qui a débusqué les trois défauts d'exécution du § 7.2), interroge les endpoints puis scanne les images avec
+Trivy. `release` n'existe que sur un push `main` **intégralement validé** (`needs` sur les quatre jobs) ; `publish` ne
+publie sur GHCR qu'après lui, pour étiqueter les images avec la version fraîchement taguée. Enfin `concurrency` annule
+les runs rendus obsolètes par un nouveau push sur la même branche - sauf en nightly, qui ne doit jamais s'annuler.
+
+**Choix des actions GitHub.** Deux principes : des éditeurs de référence, et un épinglage par SHA de commit
+(politique justifiée au § 8.2). `actions/checkout` et `actions/setup-node` (officielles GitHub, cache npm intégré),
+`actions/upload-artifact`/`download-artifact` (transport de la couverture entre jobs), `SonarSource/sonarqube-scan-action`
+(éditeur de l'outil, `qualitygate.wait=true` pour que le job **échoue** si la gate est rouge),
+`aquasecurity/trivy-action` (éditeur de Trivy), `docker/login-action`, `metadata-action` et `build-push-action`
+(officielles Docker). Un seul outil tourne **sans** action : semantic-release, exécuté par `npx` depuis le lockfile
+racine - son wrapper communautaire installait du code non verrouillé à chaque run, l'analyse et le correctif sont au
+§ 8.2.
 
 ### 2.2 Scripts d'automatisation
 
-- Scripts utilisés
-- Leur rôle dans le pipeline
-- Comment les exécuter ou les adapter
+Règle de conception : **le YAML n'orchestre, il n'implémente pas**. Chaque étape exécute un script npm défini dans le
+`package.json` du module concerné - la commande que la CI lance est donc **exactement** celle qu'un développeur lance
+en local, et adapter une étape se fait dans le script, jamais dans le workflow.
+
+| Module | Scripts | Rôle dans le pipeline |
+|---|---|---|
+| `server/` | `lint`, `typecheck`, `test:coverage`, `build`, `prisma:generate` | Jobs `server` et `release` (build des artefacts) |
+| `server/` | `backup`, `backup:verify`, `restore` | Hors pipeline : sauvegardes (§ 7), exécutés par le service `backup` de la stack |
+| `client/` | `lint`, `typecheck`, `test:coverage`, `build` | Jobs `client` et `release` |
+| racine | `release` (semantic-release) | Job `release` (§ 8.2) |
+| `tools/` | `dora`, `dora:index`, `kibana:setup`/`import`/`export` | Hors pipeline : métriques DORA et dashboards Kibana (§ 6), lancés à la demande |
+
+Deux scripts shell complètent l'ensemble : `docker-entrypoint.sh` (image du serveur) applique les migrations Prisma
+avant de démarrer l'API - un conteneur neuf part d'un volume vide - et le healthcheck du service `backup` appelle
+`dist/scripts/backup.js --health` (§ 7.3).
 
 ### 2.3 Reproductibilité
 
-- Comment relancer le pipeline
-- Gestion des secrets (sans jamais les afficher)
+**Relancer le pipeline** ne demande aucun état préalable : chaque run part d'un runner vierge et réinstalle tout.
+Quatre portes d'entrée - un push, une PR, le nightly, et l'onglet Actions pour un déclenchement manuel
+(`workflow_dispatch`) ou le re-run d'un run passé. En local, la reproduction est directe puisque la CI n'exécute que
+des scripts npm : `npm ci && npm run lint && npm run typecheck && npm run test:coverage && npm run build` dans
+`server/` ou `client/`, et `docker compose up --build` reconstitue la stack du smoke test (créer d'abord le
+répertoire `backups/`, § 7.2).
+
+Le déterminisme repose sur une chaîne d'épinglages, chacune justifiée dans sa section : `npm ci` + lockfiles pour
+toutes les dépendances (y compris l'outillage de release, § 8.2), actions GitHub par SHA (§ 8.2), images de base par
+digest (§ 8.1), version de Node centralisée (`env.NODE_VERSION`, alignée sur les Dockerfiles et `engines`). Le cache
+npm de `setup-node` n'accélère que l'installation : il est invalidé par le lockfile, jamais source de dérive.
+
+**Gestion des secrets.** Un seul secret est stocké dans le dépôt (Settings → Secrets → Actions) : `SONAR_TOKEN`,
+consommé exclusivement par le job `sonar` via le contexte `secrets` - GitHub le **masque automatiquement** dans les
+journaux, et il n'apparaît dans aucune commande. Tout le reste passe par le `GITHUB_TOKEN` éphémère fourni à chaque
+run, régi par le moindre privilège : `contents: read` pour tout le monde, élevé ponctuellement et localement -
+`contents: write` pour le seul job `release` (pousser le tag), `packages: write` pour le seul job `publish` (pousser
+les images). En local, la configuration vit dans des `.env` **gitignorés**, dont `.env.example` documente les clés
+attendues sans leurs valeurs ; leur sauvegarde est traitée au § 7.1.
 
 ## 3. Plan de conteneurisation et de déploiement
 
@@ -536,8 +608,16 @@ URL inconnue saisie dans le navigateur ne produit **pas** de 404 côté API - ng
 `index.html` pour tout le reste (fallback SPA, § 3.1) ; les erreurs applicatives se cherchent donc dans Kibana avec
 `status >= 400`, non en filtrant sur le niveau de log.
 
-**Captures** - `docs/dashboard-pipeline-dora.png`, `docs/dashboard-logs-applicatifs.png` et
-`docs/dashboard-sauvegardes.png` (les trois dashboards produits par `npm run kibana:setup` sur une stack ELK 8.19).
+**Captures** - `docs/dashboard-pipeline-dora.png`, `docs/dashboard-logs-applicatifs.png`,
+`docs/dashboard-sauvegardes.png` et `docs/dashboard-vulnerabilites.png` (les quatre dashboards produits par
+`npm run kibana:setup` sur une stack ELK 8.19 ; le quatrième est décrit au § 8).
+
+**Fraîcheur des dashboards « pull ».** Les dashboards logs et sauvegardes sont alimentés **en continu** par Logstash ;
+les dashboards pipeline (DORA) et vulnérabilités sont des **projections de l'API GitHub**, figées à la dernière
+indexation - et un index figé n'affiche pas « données anciennes », il affiche « rien de nouveau », ce qui est un
+mensonge silencieux (le travers exact du § 6.3). Le service **`indexer`** de la stack ELK relance donc
+`dora:index` + `deps:index` toutes les heures : le calendrier vit dans le compose, versionné, comme pour les
+sauvegardes (§ 7.2). Il exige `GITHUB_TOKEN` dans `elk/.env` (les alertes Dependabot ne se lisent pas anonymement).
 
 **Alertes** - Aucun seuil d'alerte n'est aujourd'hui automatisé : les valeurs proposées en § 6.2 et les alertes
 applicatives (taux de 5xx, temps de réponse) restent à instrumenter. Priorité recommandée, cohérente avec le point
@@ -618,7 +698,7 @@ dashboards (§ 6.1) : ce qui est configuré à la main sur un poste n'est pas re
     restart: unless-stopped
 ```
 
-Quatre points de conception :
+Six points de conception :
 
 - **Aucune image dédiée** : le service réutilise celle du serveur, qui contient déjà Prisma et les scripts compilés.
   Elle n'y déclare pas de `build:`, pour ne pas construire deux fois la même image ; `docker compose up --build` la
@@ -631,6 +711,17 @@ Quatre points de conception :
 - **Cadence alignée sur l'horloge**, pas sur l'instant de démarrage : un conteneur relancé à 10 h 47 sauvegarde à
   11 h 00 et non à 11 h 47. Une erreur ponctuelle (base verrouillée, disque plein) est tracée sans tuer le
   planificateur, qui retentera au tour suivant.
+- **Une sauvegarde immédiate au démarrage**, avant l'alignement. Découvert par le smoke test CI (`--wait`) : sur un
+  volume vierge, aucun état n'existe et la première sauvegarde alignée peut être à 59 minutes - le healthcheck
+  répondait donc « défaillant » pendant jusqu'à une heure sur toute installation neuve. La sauvegarde de démarrage
+  amorce l'état en une seconde (et protège la stack dès son lancement) ; la rétention horaire absorbe le doublon.
+  Côté Docker, `start_interval: 5s` fait sonder le healthcheck toutes les 5 s pendant `start_period` - sans lui, la
+  première sonde partirait à `interval` (5 min), après l'expiration du `--wait` de la CI.
+- **Le répertoire `./backups` doit exister avant le premier `up`** (il est gitignoré, donc absent d'un clone frais) :
+  si Docker crée lui-même le dossier d'un bind mount manquant, il le crée **root**, et le service - qui tourne en
+  uid 1000, non-root - ne peut plus rien y écrire. Découvert en CI : la même `EACCES` faisait échouer la sauvegarde
+  *et* l'écriture de l'état qui devait signaler cet échec (le planificateur survit désormais à ce second cas). Sur un
+  poste : `mkdir backups` avant le premier lancement ; le job `docker` de la CI le crée explicitement.
 
 Limite honnête, commune à cette solution et à `cron` : **une exécution manquée n'est pas rattrapée**. Si la machine est
 éteinte à l'heure prévue, cet instantané-là n'existera pas. Seule une minuterie `systemd` (`Persistent=true`) rattrape
@@ -782,10 +873,31 @@ planification des sauvegardes (§ 7.2). Trois canaux se complètent :
 |---|---|---|
 | **Dependabot version updates** | hebdomadaire (lundi 7 h) | PR de montée de version pour chaque dépendance en retard ; c'est le flux de maintenance ordinaire |
 | **Dependabot security updates** | immédiat, dès publication d'un avis | PR de correctif de sécurité **sans attendre le lundi** - une CVE ne suit pas le calendrier |
-| **`npm audit` + Trivy en nightly** (§ 4.2) | quotidien | Filet indépendant : signale une vulnérabilité *sans commit* - y compris dans une image déjà publiée, ce que Dependabot ne voit pas |
+| **`npm audit` + Trivy en nightly** (§ 4.2) | quotidien | Filet indépendant et canal **actif** : un job du pipeline devient rouge, chaque nuit tant que rien n'est traité ; couvre aussi les images Docker (paquets Alpine compris), que Dependabot n'analyse pas |
 
 Les *security updates* s'activent une fois dans les réglages du dépôt (Settings → Advanced Security → Dependabot),
 pas dans le fichier YAML.
+
+**Le recouvrement entre Dependabot et l'audit nightly est voulu, pas accidentel.** Sur les dépendances npm, les deux
+s'appuient sur la même base d'avis (GitHub Advisory Database) : la détection est bien redondante. Mais leurs
+propriétés s'opposent, et c'est chacune des deux qui manquerait : Dependabot **détecte et remédie** (une PR prête à
+merger, en quasi temps réel), mais son alerte est une notification **passive** de l'onglet *Security* - et le § 6.3 a
+établi ce que vaut un signal que personne ne regarde. L'audit nightly **rend l'état visible et bloquant** : un job
+rouge au cœur du pipeline, compté par les métriques du § 6 (l'incident des 60,4 h du § 6.3 a été vu précisément par ce
+canal), et qui *revient chaque nuit* tant que la vulnérabilité n'est pas traitée - là où une alerte ignorée ne relance
+personne. Supprimer l'un économiserait quelques secondes de CI par nuit, et perdrait soit le remède automatique, soit
+le rappel impossible à ignorer.
+
+**Mesurer, pas seulement alerter : le dashboard « Vulnérabilités ».** L'onglet Security de GitHub montre l'état, pas
+la performance. Les alertes sont donc **projetées dans Elasticsearch** (`npm run deps:index`, un document par alerte,
+réindexation idempotente qui suit les changements d'état) et visualisées dans un quatrième dashboard Kibana défini en
+code (`tools/kibana/buildVulnDashboard.ts`, capture `docs/dashboard-vulnerabilites.png`) : encours d'alertes ouvertes
+(l'objectif est zéro), encours critique/haute, chronologie d'apparition par sévérité, registre détaillé - et surtout le
+**délai médian de remédiation** (`fixed_at - created_at`), le KPI qui manquait au plan d'action du § 5.3 : l'incident
+des 60,4 h du § 6.3 serait aujourd'hui une ligne mesurée, pas une anecdote. Première donnée réelle, instructive : les
+deux alertes du lockfile racine (dont le `tar` du § 8.2) sont arrivées **auto-classées** par GitHub
+(`auto_dismissed`, dépendances dev-only) - la même conclusion que notre analyse manuelle, rendue automatique. Le
+rafraîchissement horaire est assuré par le service `indexer` de la stack ELK (§ 6.3).
 
 ### 8.1 Mise à jour de l'application
 
