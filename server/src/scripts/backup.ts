@@ -97,13 +97,37 @@ async function loop(): Promise<void> {
   }
 }
 
+/**
+ * Termine explicitement un usage one-shot après avoir vidé le tampon du
+ * logger. Nécessaire car l'import du logger ouvre une socket vers Logstash
+ * (si LOGSTASH_HOST est défini) qui maintient la boucle d'événements en vie :
+ * sans sortie explicite, le process ne rend JAMAIS la main — le healthcheck
+ * Docker expirait ainsi en signalant... que tout allait bien. Le délai de
+ * garde borne l'attente si le transport ne signale jamais la fin.
+ */
+async function flushLoggerAndExit(code: number): Promise<never> {
+  await Promise.race([
+    new Promise<void>((resolve) => {
+      logger.once('finish', () => resolve());
+      logger.end();
+    }),
+    new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+  ]);
+  // Petit délai : « finish » signifie que winston a transmis aux transports,
+  // pas que la socket a fini d'écrire — on laisse partir le dernier paquet
+  await new Promise<void>((resolve) => setTimeout(resolve, 200));
+  process.exit(code);
+}
+
 async function main(): Promise<void> {
-  // Verdict lisible par Docker : code de sortie 0 (sain) ou 1 (défaillant)
+  // Verdict lisible par Docker : code de sortie 0 (sain) ou 1 (défaillant).
+  // Sortie explicite dans les DEUX cas : le verdict passe par console (jamais
+  // par winston), rien à vider — mais sans exit, la socket Logstash empêche
+  // le process de terminer et Docker tue la sonde au timeout (vu en réel).
   if (process.argv.includes('--health')) {
     const verdict = evaluateHealth(readState(BACKUP_DIR), new Date());
     console.log(verdict.reason);
-    if (!verdict.healthy) process.exit(1);
-    return;
+    process.exit(verdict.healthy ? 0 : 1);
   }
 
   if (process.argv.includes('--loop')) {
@@ -125,6 +149,9 @@ async function main(): Promise<void> {
     intervalMinutes: INTERVAL_MINUTES,
     lastVerified: snapshot.name,
   });
+  // L'événement backup_snapshot doit atteindre Logstash (dashboard § 7.3)
+  // AVANT la sortie explicite — même socket, même raison que pour --health
+  await flushLoggerAndExit(0);
 }
 
 void main().catch((error: unknown) => {
