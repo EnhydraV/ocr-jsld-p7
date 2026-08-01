@@ -180,6 +180,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: |
+            package-lock.json
             server/package-lock.json
             client/package-lock.json
       - name: Build back (artefact de release)
@@ -197,9 +198,20 @@ jobs:
         run: |
           tar -czf orion-server-dist.tar.gz -C server dist prisma package.json package-lock.json
           tar -czf orion-client-dist.tar.gz -C client dist
+      - name: Outillage de release (versions verrouillées par le lockfile racine)
+        run: npm ci
       - name: semantic-release (tag + release GitHub si commits éligibles)
         id: semantic
-        uses: cycjimmy/semantic-release-action@b12c8f6015dc215fe37bc154d4ad456dd3833c90 # v6.0.0
+        # Schéma officiel semantic-release : dépendance locale + `npx`, qui
+        # résout node_modules/.bin — AUCUN code de release téléchargé à
+        # l'exécution, contrairement au wrapper tiers utilisé auparavant, qui
+        # faisait `npm install semantic-release` (latest, hors lockfile) à
+        # chaque run (§ 8.2). Les outputs new_release_* consommés par le job
+        # publish sont écrits par @semantic-release/exec (cf. .releaserc.json) ;
+        # la 1re ligne pose le défaut quand aucune release ne part.
+        run: |
+          echo "new_release_published=false" >> "$GITHUB_OUTPUT"
+          npx semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -1,8 +1,12 @@
 # API Express + Prisma/SQLite — multi-stage, cf. DOCUMENTATION.md §3.1
-ARG NODE_VERSION=22-alpine
+#
+# Base épinglée par digest (immuable, contrairement au tag) : même protection
+# de chaîne d'approvisionnement que les actions du pipeline (§ 8.2). Digest et
+# tag maintenus ensemble par Dependabot — pas d'ARG dans les FROM, son parseur
+# docker ne les résout pas (§ 8.1).
 
 # --- Étage builder : compilation TypeScript ---
-FROM node:${NODE_VERSION} AS builder
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS builder
 
 # Requis par Prisma pour détecter la variante de moteur (linux-musl-openssl-3.0.x) ;
 # sans lui, il retombe sur les moteurs openssl-1.1 incompatibles avec alpine
@@ -21,7 +25,7 @@ COPY . .
 RUN npm run build
 
 # --- Étage final : dépendances de production uniquement ---
-FROM node:${NODE_VERSION} AS runner
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runner
 
 # Même exigence qu'au build : détection OpenSSL 3 par Prisma au runtime
 RUN apk add --no-cache openssl

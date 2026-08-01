@@ -768,26 +768,140 @@ exécutions Actions (d'où l'intérêt de son archivage dans Elasticsearch, § 7
 
 ## 8. Plan de mise à jour
 
+Le principe directeur : **une mise à jour est un commit comme un autre.** Elle entre par une pull request, subit
+l'intégralité du pipeline (tests § 4, quality gate SonarQube § 5, build des images, scan Trivy, smoke e2e) et n'atteint
+`main` que verte. Le plan de mise à jour ne consiste donc pas à inventer un processus de validation - il existe déjà -
+mais à **automatiser la détection** de ce qui doit monter de version, pour que la décision humaine se limite à relire
+et merger.
+
+La détection s'appuie sur **Dependabot** (natif GitHub, aucun service tiers à héberger ni à authentifier), configuré
+dans `.github/dependabot.yml` - versionné et relu comme du code, même argument que pour les dashboards (§ 6.1) et la
+planification des sauvegardes (§ 7.2). Trois canaux se complètent :
+
+| Canal | Déclencheur | Rôle |
+|---|---|---|
+| **Dependabot version updates** | hebdomadaire (lundi 7 h) | PR de montée de version pour chaque dépendance en retard ; c'est le flux de maintenance ordinaire |
+| **Dependabot security updates** | immédiat, dès publication d'un avis | PR de correctif de sécurité **sans attendre le lundi** - une CVE ne suit pas le calendrier |
+| **`npm audit` + Trivy en nightly** (§ 4.2) | quotidien | Filet indépendant : signale une vulnérabilité *sans commit* - y compris dans une image déjà publiée, ce que Dependabot ne voit pas |
+
+Les *security updates* s'activent une fois dans les réglages du dépôt (Settings → Advanced Security → Dependabot),
+pas dans le fichier YAML.
+
 ### 8.1 Mise à jour de l'application
 
-- Dépendances npm
-- Mises à jour React / Node.js
-- Mises à jour Docker (images)
+**Dépendances npm.** Dependabot surveille les trois `package.json` (`/server`, `/client`, `/tools`) chaque semaine,
+avec deux choix de configuration qui structurent le flux :
 
-Premier cas concret à intégrer à la rédaction de cette section : dès la mise en place de la CI, `npm audit` a révélé 2
-vulnérabilités critiques et 1 haute dans la chaîne de test Vitest 2.x ; montée en version majeure (Vitest 4) validée par
-les suites de tests avant le premier run du pipeline - illustration du cycle détection (audit nightly, § 4.2) >
-mise à jour > validation par les tests.
+- **Mineures et correctifs groupés, majeures individuelles.** Les montées `minor`/`patch` d'un même module arrivent en
+  **une seule PR groupée** (`mineures-et-correctifs`) : d'après semver elles ne cassent rien, la CI le vérifie, la
+  relecture est rapide. Chaque **majeure** arrive au contraire **seule**, pour être relue avec son changelog et ses
+  instructions de migration - on ne mélange pas un breaking change avec quinze bumps triviaux qui le noieraient.
+- **Délai de maturation (`cooldown: 3 jours`).** Une version n'est proposée que trois jours après sa publication :
+  le temps qu'un paquet cassé ou compromis le jour de sa sortie soit signalé et retiré. Les *security updates*
+  ignorent ce délai, c'est voulu.
+
+Le préfixe des commits distingue ce qui est livré de ce qui ne l'est pas, car **semantic-release (§ 2) lit ces
+préfixes** : une dépendance de *production* de `server/` ou `client/` fait partie de l'application expédiée, sa montée
+est donc un `fix(deps)` qui déclenche une release patch et une reconstruction d'images ; une devDependency ou l'outillage
+de `tools/` (métriques DORA, dashboards) reste en `chore(deps)`, sans release.
+
+**Mises à jour React / Node.js.** Une majeure de framework ou de runtime n'est pas une PR Dependabot, c'est un
+**chantier planifié** :
+
+- **Node.js** : suivre le calendrier LTS officiel (une LTS paire tous les deux ans, maintenue ~30 mois) et ne monter
+  que de LTS en LTS. La version est épinglée à **quatre endroits qui doivent bouger ensemble** : `env.NODE_VERSION`
+  dans `ci.yml`, les `FROM` des deux Dockerfiles, et `engines` dans les deux `package.json`. C'est
+  précisément parce qu'aucun robot ne sait coordonner ces quatre points qu'une montée majeure de Node reste un
+  processus manuel documenté : branche dédiée, les quatre modifications, suite complète + e2e, release.
+- **React** (et les autres majeures structurantes : Prisma, Express, Vite) : la PR Dependabot sert de déclencheur,
+  mais la relecture suit les notes de version officielles et applique les codemods fournis le cas échéant. Une seule
+  majeure à la fois : si elle casse, on sait laquelle.
+
+**Images Docker.** Deux cas distincts, et une limite d'outil assumée :
+
+- **Images de base des Dockerfiles** (`node:22-alpine`, `nginx-unprivileged:alpine`) : épinglées par **digest**
+  (`node:22-alpine@sha256:…`), pour la même raison que les actions GitHub le sont par SHA (§ 8.2) - un *tag* est
+  **mutable** : quiconque contrôle le dépôt d'images en amont peut le faire pointer vers autre chose, et un tag
+  flottant est consommé **sans relecture**, au moment du build. Le digest est immuable : ce qui est construit est
+  exactement ce qui a été relu, et deux builds du même commit partent de la même base (reproductibilité, § 2.3).
+  La contrepartie est assumée : une base figée ne reçoit **plus aucun correctif tant qu'on ne la fait pas monter**,
+  l'épinglage n'est donc tenable qu'avec un robot qui propose les montées. C'est le rôle de l'écosystème `docker` de
+  Dependabot, qui met à jour **le digest et le tag ensemble** - et c'est pour lui que les `FROM` inlinent leurs
+  versions : le parseur docker de Dependabot ne résout pas les `ARG` (vérifié dans son code : la regex des `FROM`
+  n'interprète pas `${...}`), un Dockerfile paramétré par `ARG` lui serait invisible et le digest pourrirait en
+  silence. En complément, le **nightly** (§ 4.2) reconstruit les images et les passe au scan Trivy : la base étant
+  épinglée, il scanne **exactement celle qui est publiée**, et une CVE est signalée sous 24 h, sans commit. Le
+  remède est alors la PR Dependabot (ou une montée manuelle du digest), mergée puis republiée au push sur `main`
+  (§ 3.3). La montée **majeure** (`22-alpine` → `24-alpine`) est exclue de ces PR : elle appartient au chantier Node
+  ci-dessus, dont les `FROM` sont l'un des quatre points de coordination.
+- **Stack ELK** (`elk/docker-compose.yml`) : images épinglées en dur (`8.19.19`), donc surveillées par l'écosystème
+  `docker-compose` de Dependabot. Pas de digest ici, et c'est un choix : cette stack est un outil d'observation
+  **local**, jamais construit ni publié par la CI - le tag de version suffit à son niveau de risque. Les trois images (Elasticsearch, Logstash, Kibana) doivent monter **en même temps** -
+  Elastic exige l'alignement des versions - d'où un **groupe unique** produisant une seule PR pour les trois. Les
+  majeures sont exclues : un passage 8.x → 9.x est une migration (mappings, dashboards § 6 à revalider), pas un merge.
+
+Premier cas concret, antérieur à Dependabot : dès la mise en place de la CI, `npm audit` a révélé 2 vulnérabilités
+critiques et 1 haute dans la chaîne de test Vitest 2.x ; montée en version **majeure** (Vitest 4) validée par les
+suites de tests avant le premier run du pipeline. C'est exactement le cycle que ce plan automatise : détection
+(désormais Dependabot + audit nightly) → mise à jour → validation par les tests.
 
 ### 8.2 Mise à jour du pipeline CI/CD
 
-- Versions des actions GitHub
-- Versions des scripts
-- Maintenance du workflow
+Le pipeline est lui-même un logiciel avec des dépendances, et il bénéficie du même traitement :
+
+- **Actions GitHub.** Elles sont épinglées par **SHA de commit** avec la version lisible en commentaire
+  (`actions/checkout@3d3c42e5... # v7.0.1`) : un tag `v7` est mutable et constitue un vecteur d'attaque de chaîne
+  d'approvisionnement (cas réel : `tj-actions/changed-files`, mars 2025), un SHA ne l'est pas - même politique que
+  l'épinglage par digest des images de base (§ 8.1). Ce format a un coût -
+  mettre à jour un SHA à la main est pénible - et c'est Dependabot qui le paie : l'écosystème `github-actions` met à
+  jour **le SHA et le commentaire de version ensemble**, chaque semaine, mineures groupées et majeures individuelles.
+- **L'outillage de release est une dépendance comme une autre.** L'audit de ce plan a révélé que le maillon le plus
+  sensible du pipeline y échappait : le wrapper tiers qui exécutait semantic-release, bien qu'épinglé par SHA, faisait
+  `npm install semantic-release --no-audit --silent` **à chaque exécution** - le *latest* de npm, hors de tout
+  lockfile, exécuté avec un token en écriture sur le dépôt. Le SHA protégeait le téléchargeur, pas la cargaison.
+  Corrigé en adoptant le schéma **officiel** de semantic-release (qui ne fournit volontairement aucune action) :
+  devDependency dans un `package.json` racine couvert par un lockfile, `npm ci` puis `npx semantic-release` - plus
+  aucun code de release téléchargé au moment de l'exécution, et l'outil passe sous Dependabot comme toutes les autres
+  dépendances. Les sorties consommées par le job de publication (`new_release_published`, `new_release_version`) sont
+  écrites par le plugin `@semantic-release/exec` dans `$GITHUB_OUTPUT`.
+  *Limite connue et assumée* : `npm audit` signale une vulnérabilité `tar` dans le paquet `npm` **bundlé** par
+  `@semantic-release/npm` - plugin que notre configuration ne charge pas (rien n'est publié sur le registre npm) et
+  dont le binaire n'est jamais exécuté ; un paquet bundlé n'est pas corrigeable par `overrides`, l'alerte Dependabot
+  restera donc ouverte jusqu'au correctif amont. C'est aussi pourquoi l'audit nightly (§ 4.2) reste ciblé sur
+  `server/` et `client/` : la racine est couverte par les alertes Dependabot, sans mettre le pipeline en rouge
+  permanent sur un faux positif.
+- **Auto-validation.** Une PR qui touche `ci.yml` exécute le pipeline modifié : la mise à jour d'une action est donc
+  testée par le pipeline lui-même, dans les mêmes conditions que le code applicatif.
+- **Le runner** (`ubuntu-latest`) est géré par GitHub : les mises à jour sont subies, pas choisies. Les bascules
+  d'image majeure sont annoncées des mois à l'avance et testables en épinglant temporairement (`ubuntu-24.04`) - à ce
+  jour, aucune raison de figer.
+- **La version de Node du pipeline** est centralisée (`env.NODE_VERSION`) et suit le chantier Node du § 8.1 - le
+  pipeline teste avec la version qui tourne en production, jamais une autre.
 
 ### 8.3 Fréquence & bonnes pratiques
 
-- Conseils pour maintenir la solution dans le temps
+| Quoi | Quand | Pourquoi ce rythme |
+|---|---|---|
+| Mineures / correctifs npm, actions, ELK | **hebdomadaire** (lundi 7 h, PR groupées) | Assez fréquent pour que chaque marche reste petite, assez espacé pour ne pas noyer la revue ; le lot du lundi se traite en une fois |
+| Correctifs de sécurité | **immédiat** (PR Dependabot dès l'avis, hors calendrier et hors cooldown) | Une CVE exploitable n'attend pas lundi ; le nightly (§ 4.2) sert de rattrapage sous 24 h |
+| Majeures (une PR chacune) | **au fil de l'eau**, une à la fois | Isoler chaque breaking change : si la CI casse, le coupable est connu d'avance |
+| Node LTS, migration ELK | **planifié** (calendrier LTS / fin de support 8.x) | Chantiers coordonnés multi-fichiers qu'aucun robot ne sait faire atomiquement |
+| Montée des images de base (digest) | **hebdomadaire** (PR Dependabot groupée), merge → republication au push sur `main` | Une base épinglée par digest ne reçoit ses correctifs que par ces PR : les laisser traîner, c'est vieillir en silence. Le nightly (rebuild + Trivy) détecte, le push sur `main` publie |
+
+Et les règles qui rendent le système tenable dans la durée :
+
+- **Ne jamais merger une PR de mise à jour rouge « pour s'en débarrasser »** - c'est le pendant exact du nightly que
+  personne ne regarde (§ 6.3) : un signal ignoré ne protège plus rien. Une PR Dependabot rouge est un vrai travail à
+  planifier (ou une exclusion à documenter), pas du bruit.
+- **Monter souvent plutôt que beaucoup.** Dix retards de version se rattrapent en dix petites PR vertes ; deux ans de
+  retard se rattrapent en une migration à risque. Le coût d'une mise à jour croît plus vite que son retard.
+- **Laisser la CI dire non.** Le plan repose entièrement sur la qualité du filet (§ 4) : c'est parce que les tests,
+  le quality gate et les scans sont exigés par la protection de branche qu'une PR de bump peut être mergée en
+  confiance. Si la couverture baisse, c'est le plan de mise à jour entier qui se dégrade avec elle.
+- **Pas d'auto-merge pour l'instant.** L'activer (`gh pr merge --auto`) est tentant pour les patchs groupés, mais ne
+  devient raisonnable que si la suite e2e couvre les parcours critiques - à réévaluer quand elle aura mûri (§ 4.3).
+- Le service `backup` (§ 7.2) réutilise l'image du serveur : il suit ses mises à jour sans configuration
+  supplémentaire - un service de moins à maintenir.
 
 ## 9. Conclusion
 

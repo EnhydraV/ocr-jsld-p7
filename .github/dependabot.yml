@@ -1,0 +1,132 @@
+# Plan de mise à jour automatisé — cf. DOCUMENTATION.md § 8.
+#
+# GARDE-FOU : ne jamais réintroduire d'ARG dans les FROM des Dockerfiles.
+# Le parseur docker de Dependabot ne résout pas ${...} : un FROM paramétré
+# devient invisible pour l'écosystème docker ci-dessous, et le digest épinglé
+# (chaîne d'approvisionnement, § 8.1) cesse d'être mis à jour — sans erreur
+# nulle part. Les images de base restent donc inlinées, digest + tag ensemble.
+version: 2
+
+updates:
+  # Code livré : une montée de dépendance de production change l'application
+  # expédiée, d'où le préfixe `fix` (semantic-release publie un correctif).
+  # Les devDependencies restent en `chore` (aucune release déclenchée).
+  # La racine ne porte que l'outillage de release (semantic-release, § 8.2),
+  # en devDependencies : tout y sort donc en `chore` aussi.
+  - package-ecosystem: "npm"
+    directories:
+      - "/"
+      - "/server"
+      - "/client"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Paris"
+    # Laisse mûrir une publication 3 jours : évite d'embarquer une version
+    # retirée ou cassée le jour de sa sortie (§ 8.3)
+    cooldown:
+      default-days: 3
+    groups:
+      mineures-et-correctifs:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    # Les majeures ne sont volontairement pas groupées : une PR par montée
+    # majeure, relue avec son changelog (§ 8.3)
+    commit-message:
+      prefix: "fix"
+      prefix-development: "chore"
+      include: "scope"
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 10
+
+  # Outillage interne (DORA, dashboards Kibana) : jamais livré, tout en `chore`
+  - package-ecosystem: "npm"
+    directory: "/tools"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 3
+    groups:
+      mineures-et-correctifs:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    labels:
+      - "dependencies"
+
+  # Actions GitHub : Dependabot met à jour le SHA épinglé ET le commentaire
+  # de version (# vX.Y.Z) — le format déjà en place dans ci.yml (§ 8.2)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 3
+    groups:
+      actions-mineures:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+
+  # Images de base des Dockerfiles, épinglées par digest : Dependabot propose
+  # une PR quand le tag est reconstruit en amont (correctifs de la base) et
+  # met à jour digest + tag ensemble. Préfixe `fix` : l'image livrée change,
+  # semantic-release publie un correctif et la republie versionnée.
+  # Majeure de Node exclue : c'est le chantier coordonné du § 8.1 (ci.yml,
+  # Dockerfiles, engines), pas une PR de robot.
+  - package-ecosystem: "docker"
+    directories:
+      - "/server"
+      - "/client"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Paris"
+    groups:
+      images-de-base:
+        applies-to: version-updates
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    labels:
+      - "dependencies"
+
+  # Stack ELK locale : les trois images (Elasticsearch, Logstash, Kibana)
+  # doivent monter de version EN MÊME TEMPS, d'où le groupe unique.
+  # Majeures exclues : un passage 8.x -> 9.x est une migration, pas une PR.
+  - package-ecosystem: "docker-compose"
+    directory: "/elk"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Paris"
+    groups:
+      stack-elk:
+        applies-to: version-updates
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore"
+    labels:
+      - "dependencies"
