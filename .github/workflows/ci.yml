@@ -160,7 +160,7 @@ jobs:
         if: always()
         run: docker compose down -v
       - name: Scan Trivy — image server
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ghcr.io/enhydrav/ocr-jsld-p7-server:latest
           severity: HIGH,CRITICAL
@@ -169,7 +169,7 @@ jobs:
           # rendraient le job rouge en permanence sans action possible)
           ignore-unfixed: true
       - name: Scan Trivy — image client
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ghcr.io/enhydrav/ocr-jsld-p7-client:latest
           severity: HIGH,CRITICAL
