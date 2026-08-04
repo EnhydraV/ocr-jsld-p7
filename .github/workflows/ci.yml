@@ -88,8 +88,21 @@ jobs:
 
   sonar:
     name: Analyse SonarQube Cloud
-    # Quality gate exigée sur les PR et sur main ; inutile sur les branches sans PR
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # Quality gate exigée sur les PR et sur main ; inutile sur les branches sans PR.
+    #
+    # Exclusion de Dependabot : un run déclenché par Dependabot n'a accès qu'aux
+    # secrets *Dependabot*, jamais aux secrets Actions — SONAR_TOKEN arrive donc
+    # vide et le scanner échoue en « Not authorized or project not found ». Ces PR
+    # ne touchant que des manifestes, il n'y a aucun code source à analyser :
+    # lint, tests, build, smoke test Docker et scan Trivy s'exécutent toujours,
+    # ce sont eux qui valident une montée de dépendance. Un job sauté compte comme
+    # succès pour la protection de branche, la PR reste donc fusionnable.
+    # Alternative écartée : dupliquer SONAR_TOKEN en secret Dependabot, qui
+    # exposerait un jeton d'écriture à des exécutions automatiques sans rien
+    # apporter en retour.
+    if: >-
+      (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [server, client]
     runs-on: ubuntu-latest
     steps:
