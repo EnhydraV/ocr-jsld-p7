@@ -1,210 +1,203 @@
-# Orion CRM
+# Orion CRM — pipeline CI/CD
 
-A simplified Customer Relationship Management (CRM) application built with the MERN stack (modernized with TypeScript, Vite, and Prisma).
+CRM interne simplifiée (contacts et organisations) servant de support à la mise en place d'une **chaîne d'intégration
+et de livraison continues** complète : tests automatisés, analyse de qualité et de sécurité, conteneurisation,
+versionnage automatique, publication d'images, supervision, sauvegardes.
 
-## Architecture
+- **Front** : React 19 + TypeScript + Vite + Tailwind CSS
+- **Back** : Node.js 22 + Express 5 + TypeScript + Prisma + SQLite
+- **Chaîne** : GitHub Actions, SonarQube Cloud, Trivy, semantic-release, GHCR, Docker Compose, Elasticsearch/Logstash/Kibana
 
-This project follows a monorepo structure with separate frontend and backend applications:
+La documentation technique complète — étapes de mise en œuvre, plans de conteneurisation, de testing, de sécurité, de
+sauvegarde et de mise à jour, métriques DORA et KPI — est dans **[DOCUMENTATION.md](DOCUMENTATION.md)**. Ce fichier-ci
+ne couvre que l'exécution et les choix techniques.
 
-- **Frontend**: React 19 + TypeScript + Vite + Tailwind CSS
-- **Backend**: Node.js 22 + Express 5 + TypeScript + Prisma
+---
 
-## Prerequisites
+## Démarrage rapide
 
-- **Node.js** >= 22.0.0
-- **npm** >= 10.0.0
-
-## Installation
-
-### 1. Clone the repository
-
-```bash
-git clone <repository-url>
-cd p7-dfsjs
-```
-
-### 2. Install backend dependencies
+**Prérequis** : Docker avec Compose. Rien d'autre — ni Node, ni base de données à installer.
 
 ```bash
-cd server
-npm install
+git clone https://github.com/EnhydraV/ocr-jsld-p7.git && cd ocr-jsld-p7
+mkdir -p backups                 # doit exister avant le premier démarrage (voir ci-dessous)
+docker compose up -d --build
 ```
 
-### 3. Configure environment variables
+| Service | Adresse |
+|---|---|
+| Application | http://localhost:4200 |
+| API | http://localhost:8080/api/health |
+
+Les migrations Prisma sont appliquées automatiquement au démarrage du conteneur : une installation neuve part d'une
+base vide et fonctionnelle. Arrêt : `docker compose down` — les données **survivent** (volume nommé `orion-db`).
+`docker compose down -v` détruit le volume, donc la base : commande réservée au poste de développement.
+
+> **`mkdir -p backups`** n'est pas une coquetterie : le répertoire est gitignoré, et créé par Docker il appartiendrait
+> à `root`, que le conteneur non-root ne peut pas écrire. Le pipeline le crée de son côté.
+
+### Supervision (optionnelle)
+
+La stack Elasticsearch / Logstash / Kibana vit dans un compose **séparé** et volontairement **hors du pipeline** (elle
+demande environ 4 Go de mémoire, cf. § 6 de la documentation).
 
 ```bash
-cp .env.example .env
+cp elk/.env.example elk/.env     # renseigner GITHUB_TOKEN (lecture des alertes Dependabot)
+cp .env.example .env             # LOGSTASH_HOST=logstash pour expédier les logs applicatifs
+./run.sh                         # tout démarrer, attendre les services, créer les dashboards
 ```
 
-Edit `.env` if needed (default values should work for local development).
+`./run.sh` enchaîne la stack applicative, la stack ELK, l'attente effective des services, l'indexation des métriques
+puis la création des quatre dashboards. Kibana est ensuite sur http://localhost:5601.
 
-### 4. Initialize the database
+| Dashboard | Contenu | Capture |
+|---|---|---|
+| Pipeline CI/CD | métriques DORA et KPI du pipeline | [docs/](docs/dashboard-pipeline-dora.png) |
+| Logs applicatifs | requêtes HTTP, erreurs, temps de réponse | [docs/](docs/dashboard-logs-applicatifs.png) |
+| Sauvegardes | instantanés, échecs, contrôles de restaurabilité | [docs/](docs/dashboard-sauvegardes.png) |
+| Vulnérabilités | alertes Dependabot par gravité et par écosystème | [docs/](docs/dashboard-vulnerabilites.png) |
+
+### Développement local (sans Docker)
+
+Node.js >= 22 et npm >= 10.
 
 ```bash
-npx prisma generate
-npx prisma migrate dev --name init
+# Back — API sur :8080
+cd server && npm ci && cp .env.example .env
+npx prisma migrate dev && npm run dev
+
+# Front — application sur :4200 (nouveau terminal)
+cd client && npm ci && cp .env.example .env && npm run dev
 ```
 
-### 5. Install frontend dependencies
+Le front appelle l'API par des **URL relatives** : le proxy de Vite en développement et le reverse proxy nginx en
+production font que front et API partagent toujours la même origine.
+
+---
+
+## Le pipeline CI/CD
+
+Un seul workflow (`.github/workflows/ci.yml`), sept jobs, et une **matrice de déclencheurs** où chacun a un rôle
+distinct :
+
+| Déclencheur | Ce qui s'exécute | Rôle |
+|---|---|---|
+| Push (toute branche) | lint, types, tests + couverture, build (back et front) | Retour rapide au développeur |
+| Pull request vers `main` | idem + quality gate SonarQube + build des images + smoke test de la stack + scan Trivy | Tout ce qui conditionne la fusion |
+| Nightly (cron) | idem + `npm audit` | Détecter ce qu'**aucun commit ne révèle** : une CVE publiée cette nuit rend rouge un dépôt vert hier |
+| Push sur `main` | suite complète + release SemVer + publication GHCR | Seul un état intégralement validé est promu |
+
+Deux principes structurent l'ensemble :
+
+- **le YAML n'orchestre, il n'implémente pas** : chaque étape appelle un script npm, donc la commande que lance la CI
+  est *exactement* celle qu'un développeur lance en local ;
+- **la livraison est conditionnée** : les jobs de release et de publication dépendent de tous les autres. Un échec
+  **bloque** la livraison au lieu de la dégrader.
+
+Couverture : 123 tests côté back, 17 côté front, 55 sur l'outillage ; seuil bloquant à 80 % sur le périmètre métier.
+
+---
+
+## Choix techniques, et pourquoi
+
+| Choix | Raison |
+|---|---|
+| **Images multi-étages, exécution non-root** | L'étage de production ne contient ni compilateur, ni sources, ni `npm` — surface d'attaque réduite. `npm` a d'ailleurs été retiré après que Trivy y a trouvé cinq CVE dans ses propres dépendances. |
+| **`nginx-unprivileged` + reverse proxy `/api`** | Le front est servi par un vrai serveur web, pas par un serveur de développement ; le proxy fait que front et API partagent la même origine, **ce qui rend CORS inutile** (le middleware a été supprimé : n'émettre aucun en-tête CORS est la politique la plus restrictive). |
+| **Actions épinglées par SHA de commit** | Un tag est mutable : le déplacer suffit à faire exécuter du code arbitraire par le pipeline. C'est le vecteur de l'attaque `tj-actions` de mars 2025. |
+| **Images de base épinglées par digest** | Même raisonnement, appliqué à la chaîne d'approvisionnement Docker ; Dependabot met à jour digest et tag ensemble. |
+| **Trivy plutôt que Twistlock** | Twistlock (cité par le brief) est commercial, avec console sous licence ; Trivy rend le même service, en open source, et bloque sur les CVE HIGH/CRITICAL **corrigeables**. |
+| **semantic-release** | La version est déduite des messages de commit : plus d'oubli de tag, plus de numéro arbitraire. Les dépendances de développement (`chore`) ne déclenchent aucune version, celles livrées (`fix`) publient un correctif. |
+| **Trois étiquettes d'image sur GHCR** | `latest` pour la commodité, le **SHA du commit** pour la traçabilité (toute image remonte à un commit exact), la version quand il y a release. |
+| **SQLite + Prisma** | Application interne, faible volumétrie, un seul rédacteur : une bibliothèque embarquée suffit et supprime toute une classe d'infrastructure. Prisma abstrait le SQL, ce qui laisse la porte ouverte à PostgreSQL. |
+| **Migrations versionnées, appliquées à l'entrée** | Le schéma est toujours à jour au démarrage du conteneur, et son historique vit dans git. |
+| **ELK hors du pipeline** | Consigne du brief, et bon sens : c'est un outil d'observation du *runtime*, pas de validation du code. |
+| **Dashboards définis en code** | Un dashboard cliqué à la main n'est pas reproductible : il disparaît avec le poste qui l'héberge. Les quatre sont décrits en TypeScript et créés par l'API de Kibana. |
+| **Sauvegardes par `VACUUM INTO`** | SQLite garantit un instantané **cohérent à chaud**, là où un `cp` peut capturer un état déchiré. Prisma étant déjà dans l'image, aucun outil ni conteneur supplémentaire n'est requis. |
+
+---
+
+## Sauvegardes et restauration
+
+La base SQLite est la seule donnée irremplaçable du projet. Un service `backup` de la stack en prend un instantané
+**horaire** (rétention 24 h / 7 j / 4 s / 12 m) et contrôle **chaque jour** qu'il est réellement restaurable. Les
+instantanés sont écrits dans `./backups`, **hors du volume de données** : un `down -v` détruit la base sans emporter
+ses sauvegardes.
 
 ```bash
-cd ../client
-npm install
+docker compose exec -T server node dist/scripts/backup.js             # sauvegarde à la demande
+docker compose exec -T server node dist/scripts/restore.js --verify   # contrôle de restaurabilité
+docker compose stop server                                            # avant toute restauration réelle
+docker compose exec -T server node dist/scripts/restore.js --yes      # restauration (sans --yes : refus)
 ```
 
-### 6. Configure frontend environment
+Durées mesurées sur une base de 4,7 Mo (20 000 contacts) : sauvegarde **3,0 s**, contrôle **0,35 s**, restauration
+**1,1 s**, rétablissement complet **moins d'une minute** (l'essentiel étant l'arrêt et le redémarrage du service). La
+restauration conserve l'état précédent sous `pre-restore-*` : elle est réversible. Plan complet et exercices
+périodiques au § 7 de la documentation.
 
-```bash
-cp .env.example .env
-```
+---
 
-## Running the Application
+## Scripts disponibles
 
-### Start the backend server
+| Module | Scripts |
+|---|---|
+| `server/` | `dev`, `build`, `start`, `lint`, `typecheck`, `test`, `test:coverage`, `prisma:generate`, `prisma:migrate`, `prisma:studio`, `backup`, `backup:verify`, `restore` |
+| `client/` | `dev`, `build`, `preview`, `lint`, `typecheck`, `test`, `test:coverage` |
+| `tools/` | `dora`, `dora:index`, `deps:index`, `kibana:setup`, `kibana:import`, `kibana:export`, `test`, `typecheck` |
+| racine | `release` (semantic-release, exécuté par le pipeline) |
 
-```bash
-cd server
-npm run dev
-```
+---
 
-The API will be available at `http://localhost:8080`
-
-### Start the frontend application
-
-In a new terminal:
-
-```bash
-cd client
-npm run dev
-```
-
-The application will be available at `http://localhost:4200`
-
-## Available Scripts
-
-### Backend (server/)
-
-- `npm run dev` - Start development server with hot reload
-- `npm run build` - Build for production
-- `npm start` - Start production server
-- `npm test` - Run tests
-- `npm run lint` - Lint code
-- `npm run prisma:generate` - Generate Prisma client
-- `npm run prisma:migrate` - Run database migrations
-- `npm run prisma:studio` - Open Prisma Studio (database GUI)
-
-### Frontend (client/)
-
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run preview` - Preview production build
-- `npm test` - Run tests
-- `npm run lint` - Lint code
-
-## Project Structure
+## Structure du dépôt
 
 ```
-p7-dfsjs-starter/
-├── client/                 # Frontend React application
-│   ├── src/
-│   │   ├── components/    # Reusable React components
-│   │   ├── pages/         # Page components
-│   │   ├── hooks/         # Custom React hooks
-│   │   ├── services/      # API client services
-│   │   ├── types/         # TypeScript type definitions
-│   │   ├── App.tsx        # Main App component
-│   │   └── main.tsx       # Application entry point
-│   ├── public/
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── Dockerfile
-├── server/                # Backend Express application
-│   ├── src/
-│   │   ├── controllers/   # Route handlers (HTTP layer)
-│   │   ├── services/      # Business logic layer
-│   │   ├── repositories/  # Data access layer
-│   │   ├── models/        # Data models and schemas
-│   │   ├── routes/        # API route definitions
-│   │   └── index.ts       # Server entry point
-│   ├── prisma/
-│   │   └── schema.prisma  # Database schema
-│   ├── package.json
-│   ├── tsconfig.json
-│   └── Dockerfile
-└── README.md
+.
+├── .github/workflows/ci.yml   # Le pipeline : 7 jobs, 4 déclencheurs
+├── client/                    # Front React (Dockerfile + nginx.conf)
+├── server/                    # API Express
+│   └── src/
+│       ├── controllers/  services/  repositories/  models/  routes/
+│       ├── lib/               # Prisma, logger, logique de sauvegarde
+│       ├── middleware/        # Journalisation HTTP structurée
+│       ├── scripts/           # Points d'entrée sauvegarde et restauration
+│       └── tests/             # Unitaires et intégration
+├── elk/                       # Stack de supervision (compose séparé)
+├── tools/                     # Métriques DORA, alertes, dashboards en code
+├── docs/                      # Captures des dashboards
+├── docker-compose.yml         # server + backup + client
+├── run.sh                     # Démarrage complet
+├── DOCUMENTATION.md           # Documentation technique (9 sections + annexes)
+└── sonar-project.properties
 ```
 
-## Features
+---
 
-- **Dashboard**: View statistics and overview
-- **Contacts Management**: Create, read, update, and delete contacts
-- **Organizations Management**: Manage companies and link them to contacts
-- **RESTful API**: Well-structured backend with Controller-Service-Repository pattern
-- **Type Safety**: Full TypeScript support on frontend and backend
-- **Modern UI**: Tailwind CSS with responsive design
+## API REST
 
-## API Endpoints
+| Méthode | Route | Rôle |
+|---|---|---|
+| `GET` | `/api/health` | État de l'API (utilisé par les healthchecks) |
+| `GET` `POST` | `/api/organizations` | Lister, créer |
+| `GET` `PUT` `DELETE` | `/api/organizations/:id` | Consulter, modifier, supprimer |
+| `GET` | `/api/organizations/stats` | Statistiques |
+| `GET` `POST` | `/api/contacts` | Lister, créer |
+| `GET` `PUT` `DELETE` | `/api/contacts/:id` | Consulter, modifier, supprimer |
+| `GET` | `/api/contacts/stats` | Statistiques |
+| `GET` | `/api/debug/status/:code` | Renvoie le statut demandé — génère du trafic varié pour la démonstration de supervision |
 
-### Organizations
+Validation des entrées par Zod, architecture en couches contrôleur → service → repository, TypeScript strict des deux
+côtés.
 
-- `GET /api/organizations` - Get all organizations
-- `GET /api/organizations/:id` - Get organization by ID
-- `POST /api/organizations` - Create new organization
-- `PUT /api/organizations/:id` - Update organization
-- `DELETE /api/organizations/:id` - Delete organization
-- `GET /api/organizations/stats` - Get organization statistics
+---
 
-### Contacts
+## Documentation
 
-- `GET /api/contacts` - Get all contacts
-- `GET /api/contacts/:id` - Get contact by ID
-- `POST /api/contacts` - Create new contact
-- `PUT /api/contacts/:id` - Update contact
-- `DELETE /api/contacts/:id` - Delete contact
-- `GET /api/contacts/stats` - Get contact statistics
+| Document | Contenu |
+|---|---|
+| [DOCUMENTATION.md](DOCUMENTATION.md) | Documentation technique : mise en œuvre, conteneurisation, testing, sécurité, monitoring et métriques, sauvegarde, mise à jour, plus trois annexes (commandes utiles, détails d'implémentation, captures) |
+| `docs/*.png` | Captures des quatre dashboards |
 
-## Technology Stack
-
-### Frontend
-
-- **React 19**: Modern React with Hooks
-- **TypeScript 5.x**: Static typing
-- **Vite**: Fast build tool
-- **Tailwind CSS**: Utility-first CSS framework
-- **TanStack Query**: Data fetching and caching
-- **Axios**: HTTP client
-- **React Router**: Client-side routing
-- **Zustand**: Lightweight state management
-
-### Backend
-
-- **Node.js 22 LTS**: JavaScript runtime
-- **Express 5**: Web framework
-- **TypeScript 5.x**: Static typing
-- **Prisma**: Modern ORM
-- **SQLite**: Development database
-- **Zod**: Runtime type validation
-- **Vitest**: Testing framework
-
-## Development Guidelines
-
-### Code Style
-
-- Use **TypeScript strict mode**
-- No `any` types allowed
-- Use **functional components** and hooks (no class components)
-- Use `async/await` for asynchronous operations (no callbacks)
-- Follow the **Controller-Service-Repository** pattern on the backend
-
-### Architecture Principles
-
-- **Separation of Concerns**: Clear separation between UI, business logic, and data access
-- **Type Safety**: Define interfaces/types for all data structures
-- **Custom Hooks**: Extract complex logic into reusable hooks
-- **API Layer**: Centralized API calls in service files
-- **Validation**: Use Zod schemas for input validation
-
-## License
+## Licence
 
 MIT
