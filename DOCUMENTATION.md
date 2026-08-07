@@ -626,7 +626,7 @@ Trois niveaux d'épreuve, du plus fréquent au plus rare :
 | Épreuve | Ce qu'elle couvre | Fréquence | Constat |
 |---|---|---|---|
 | **Contrôle de restaurabilité automatisé** | l'instantané s'ouvre, son intégrité est saine, ses volumes sont conformes | **quotidien** (service `backup`, 4 h UTC) | 0,35 s ; échec signalé à trois niveaux (ci-dessous) |
-| **Tests automatisés** | rétention, nommage, cohérence de l'état, suppression des journaux résiduels, refus d'un instantané corrompu, restauration sur fichiers SQLite réels | **à chaque exécution du pipeline** | 123 tests back, dont 19 dédiés à la sauvegarde |
+| **Tests automatisés** | rétention, nommage, cohérence de l'état, suppression des journaux résiduels, refus d'un instantané corrompu, restauration sur fichiers SQLite réels | **à chaque exécution du pipeline** | 123 tests back, dont **48 dédiés à la sauvegarde** |
 | **Exercice de restauration complet** | la procédure entière du § 7.3, arrêt et redémarrage du service compris | **trimestriel**, à consigner (date, durée, instantané utilisé, anomalies) | exercé manuellement : données supprimées puis retrouvées à l'identique |
 
 Le premier exercice complet a été mené de bout en bout : jeu de données créé, sauvegarde, contrôle, **suppression de
