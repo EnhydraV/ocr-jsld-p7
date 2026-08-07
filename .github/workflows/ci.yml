@@ -246,6 +246,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Driver docker-container : le driver par défaut ne sait pas exporter les
+      # couches vers le cache GitHub
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - name: Connexion à GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -268,6 +271,12 @@ jobs:
           push: true
           tags: ${{ steps.meta-server.outputs.tags }}
           labels: ${{ steps.meta-server.outputs.labels }}
+          # Réutilise les couches quand le lockfile n'a pas changé : build plus
+          # rapide, et surtout plus de téléchargement des moteurs Prisma à chaque
+          # publication — un ECONNRESET pendant ce postinstall a déjà fait échouer
+          # une publication (aléa réseau, code inchangé)
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,mode=max,scope=server
       - name: Métadonnées image client (tags latest + SHA + version éventuelle)
         id: meta-client
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -284,6 +293,12 @@ jobs:
           push: true
           tags: ${{ steps.meta-client.outputs.tags }}
           labels: ${{ steps.meta-client.outputs.labels }}
+          # Réutilise les couches quand le lockfile n'a pas changé : build plus
+          # rapide, et surtout plus de téléchargement des moteurs Prisma à chaque
+          # publication — un ECONNRESET pendant ce postinstall a déjà fait échouer
+          # une publication (aléa réseau, code inchangé)
+          cache-from: type=gha,scope=client
+          cache-to: type=gha,mode=max,scope=client
 
   audit:
     name: Audit des dépendances (nightly)
