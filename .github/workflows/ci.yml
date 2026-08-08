@@ -301,17 +301,20 @@ jobs:
           cache-to: type=gha,mode=max,scope=client
 
   audit:
-    name: Audit des dépendances (nightly)
+    name: Audit des dépendances (${{ matrix.workspace }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    strategy:
+      # Un audit rouge ne doit pas masquer l'état des deux autres : on veut le
+      # rapport complet en une seule exécution nightly
+      fail-fast: false
+      matrix:
+        workspace: [server, client, tools]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - name: Audit back
-        working-directory: server
-        run: npm audit --audit-level=high
-      - name: Audit front
-        working-directory: client
+      - name: Audit ${{ matrix.workspace }}
+        working-directory: ${{ matrix.workspace }}
         run: npm audit --audit-level=high
