@@ -7,7 +7,10 @@
  *
  * Variables d'environnement : GITHUB_TOKEN (REQUIS — ex. $(gh auth token)),
  * ELASTICSEARCH_URL (défaut http://localhost:9200), VULNS_REPO, VULNS_INDEX.
+ * Elles peuvent être posées une fois pour toutes dans `tools/.env`
+ * (cf. `.env.example`) plutôt qu'exportées à chaque terminal.
  */
+import './loadEnv.js';
 import { fetchAlerts } from './vulns/github.js';
 import { buildAlertDocuments, DEFAULT_INDEX, indexAlerts } from './vulns/elastic.js';
 

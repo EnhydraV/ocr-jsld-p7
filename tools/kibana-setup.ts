@@ -11,8 +11,10 @@
  * un dashboard reproductible. Écrire ce JSON à la main n'en est pas une : le
  * format des visualisations Lens est trop verbeux et trop pointilleux.
  *
- * Variables : KIBANA_URL (défaut http://localhost:5601), KIBANA_OBJECTS.
+ * Variables : KIBANA_URL (défaut http://localhost:5601), KIBANA_OBJECTS —
+ * posables dans `tools/.env` (cf. `.env.example`).
  */
+import './loadEnv.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { buildDashboard, buildPanels } from './kibana/buildDashboard.js';

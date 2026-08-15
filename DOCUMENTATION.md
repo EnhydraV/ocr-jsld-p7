@@ -702,6 +702,10 @@ idempotente qui suit les états) et visualisées dans le quatrième dashboard (c
 sévérité, registre - et surtout le **délai médian de remédiation** (`fixed_at - created_at`), le KPI qui manquait au
 [§ 5.3](#53-plan-daction--remédiation). Première donnée réelle : les deux alertes du lockfile racine (dont le `tar` du [§ 8.2](#82-mise-à-jour-du-pipeline-cicd)) sont arrivées
 **auto-classées** par GitHub (dépendances dev-only). Rafraîchissement horaire par le service `indexer` ([§ 6.3](#63-analyse-synthétique-du-monitoring)).
+Contrairement aux exécutions Actions, publiques, cet endpoint n'a **pas de lecture anonyme** : `GITHUB_TOKEN` y est
+obligatoire (le jeton du GitHub CLI convient, `gh auth token`). En local il se pose une fois dans `tools/.env`
+(gitignoré, modèle `tools/.env.example`) ; une variable déjà présente dans l'environnement l'emporte, la CI n'est donc
+jamais affectée.
 
 ### 8.1 Mise à jour de l'application
 

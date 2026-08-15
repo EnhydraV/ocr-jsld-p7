@@ -8,10 +8,12 @@
  *
  * Variables d'environnement : GITHUB_TOKEN (facultatif, relève la limite de
  * 60 requêtes/h), ELASTICSEARCH_URL (défaut http://localhost:9200), DORA_REPO,
- * DORA_CACHE, PIPELINE_INDEX.
+ * DORA_CACHE, PIPELINE_INDEX. Elles peuvent être posées une fois pour toutes
+ * dans `tools/.env` (cf. `.env.example`) plutôt qu'exportées à chaque terminal.
  *
  * Les définitions retenues sont justifiées dans DOCUMENTATION.md § 6.1.
  */
+import './loadEnv.js';
 import { fetchRunsWithJobs } from './dora/github.js';
 import { computeMetrics } from './dora/metrics.js';
 import { buildReport } from './dora/report.js';

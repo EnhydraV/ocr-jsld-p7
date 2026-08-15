@@ -12,7 +12,10 @@ const API = 'https://api.github.com';
 export async function fetchAlerts(repo: string): Promise<DependabotAlert[]> {
   const token = process.env.GITHUB_TOKEN;
   if (!token) {
-    throw new Error('GITHUB_TOKEN requis pour lire les alertes Dependabot — ex. GITHUB_TOKEN=$(gh auth token)');
+    throw new Error(
+      'GITHUB_TOKEN requis pour lire les alertes Dependabot. ' +
+        'Le plus simple : copier tools/.env.example en tools/.env et y coller la sortie de `gh auth token`.',
+    );
   }
 
   const alerts: DependabotAlert[] = [];
