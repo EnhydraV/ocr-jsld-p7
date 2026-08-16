@@ -29,6 +29,10 @@ docker compose up -d --build
 | Application | http://localhost:4200 |
 | API | http://localhost:8080/api/health |
 
+`--build` reconstruit les images depuis les sources. Pour utiliser celles que la CI a publiées sur GHCR - c'est le
+mode « déploiement » du [§ 3.3](DOCUMENTATION.md) - remplacer par `docker compose pull` puis `docker compose up -d --wait` : `pull` est
+nécessaire, `up` seul réutilise sans broncher une image locale périmée.
+
 Les migrations Prisma sont appliquées automatiquement au démarrage du conteneur : une installation neuve part d'une
 base vide et fonctionnelle. Arrêt : `docker compose down` — les données **survivent** (volume nommé `orion-db`).
 `docker compose down -v` détruit le volume, donc la base : commande réservée au poste de développement.
@@ -41,14 +45,56 @@ base vide et fonctionnelle. Arrêt : `docker compose down` — les données **su
 La stack Elasticsearch / Logstash / Kibana vit dans un compose **séparé** et volontairement **hors du pipeline** (elle
 demande environ 4 Go de mémoire, cf. § 6 de la documentation).
 
-```bash
-cp elk/.env.example elk/.env     # renseigner GITHUB_TOKEN (lecture des alertes Dependabot)
-cp .env.example .env             # LOGSTASH_HOST=logstash pour expédier les logs applicatifs
-./run.sh                         # tout démarrer, attendre les services, créer les dashboards
+**Prérequis** — copier les deux modèles d'environnement, puis renseigner leur unique variable :
+
+| Fichier | Modèle | Variable |
+|---|---|---|
+| `.env` | `.env.example` | `LOGSTASH_HOST=logstash` — expédie les logs applicatifs vers la stack |
+| `elk/.env` | `elk/.env.example` | `GITHUB_TOKEN` — lecture des alertes Dependabot (`gh auth token` convient) |
+
+**Raccourci** — `./run.sh` (Linux, macOS, Git Bash) ou `run.bat` (Windows) enchaînent toute la séquence ci-dessous et
+attendent réellement chaque service ; `./run.sh down` ou `run.bat down` arrêtent les deux stacks. Les commandes
+restent détaillées ici : un script qu'on ne peut pas lire ligne à ligne se contourne au premier incident.
+
+**Démarrage**, dans cet ordre :
+
+```
+docker compose pull
+docker compose up -d --wait
+docker compose -f elk/docker-compose.yml pull
+docker compose -f elk/docker-compose.yml up -d
+docker compose restart server backup
 ```
 
-`./run.sh` enchaîne la stack applicative, la stack ELK, l'attente effective des services, l'indexation des métriques
-puis la création des quatre dashboards. Kibana est ensuite sur http://localhost:5601.
+L'ordre n'est pas indifférent. La stack applicative crée le réseau `orion`, que le compose ELK déclare `external` et ne
+sait pas créer lui-même. Et le redémarrage final n'est pas décoratif : le transport Winston → Logstash ne se connecte
+qu'au **démarrage** du processus — quatre tentatives, puis il se tait pour ne pas gêner l'application. Les conteneurs
+applicatifs ayant forcément démarré avant Logstash, ils ont déjà renoncé ; on les relance une fois le port 5000 ouvert.
+
+Kibana met une minute environ à répondre sur http://localhost:5601. Ensuite, indexation des métriques et création des
+quatre dashboards :
+
+```
+cd tools
+npm ci
+npm run dora:index -- --refresh
+npm run deps:index
+npm run kibana:setup
+```
+
+Le service `indexer` de la stack ELK rejoue les deux indexations toutes les heures ; les lancer à la main sert
+seulement à ne pas attendre pour voir des données. `kibana:setup` est rejouable et fait foi : le code des dashboards
+l'emporte sur un export plus ancien.
+
+**Arrêt** — la stack ELK d'abord, puisqu'elle est raccordée au réseau de l'autre :
+
+```
+docker compose -f elk/docker-compose.yml down
+docker compose down
+```
+
+Ajouter `-v` détruit les volumes, donc la base et les index Elasticsearch. Les sauvegardes de `./backups` y survivent,
+c'est précisément pourquoi elles sont hors du volume de données (voir § 7 de la documentation).
 
 | Dashboard | Contenu | Capture |
 |---|---|---|
@@ -166,7 +212,7 @@ périodiques au § 7 de la documentation.
 ├── tools/                     # Métriques DORA, alertes, dashboards en code
 ├── docs/                      # Captures des dashboards
 ├── docker-compose.yml         # server + backup + client
-├── run.sh                     # Démarrage complet
+├── run.sh / run.bat           # Démarrage complet (raccourci ; cf. § Supervision)
 ├── DOCUMENTATION.md           # Documentation technique (9 sections + annexes)
 └── sonar-project.properties
 ```

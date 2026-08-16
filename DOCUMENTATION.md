@@ -425,7 +425,7 @@ pour trois data views, chacune correspondant à une nature de données :
 | Vulnérabilités ([§ 8](#8-plan-de-mise-à-jour)) | `orion-vulnerabilities` | projection de l'API GitHub (`deps:index`, en *pull*) |
 
 Les
-contraintes de l'API Kibana découvertes à l'exécution sont consignées dans le code et verrouillées par les 62 tests
+contraintes de l'API Kibana découvertes à l'exécution sont consignées dans le code et verrouillées par les 65 tests
 de `tools/`.
 `npm run dora:index` projette l'historique dans l'index `orion-pipeline-metrics` (ids stables, réexécution
 idempotente) ; Kibana dérive les indicateurs par agrégation, dans un index **distinct** des logs applicatifs. La
@@ -438,8 +438,18 @@ porte enfin une **aide contextuelle** (icône d'information de son en-tête) rap
 périmètre : un dashboard se lit souvent sans la documentation à côté, et une tuile muette se lit de travers.
 
 **Période observée** : du 04/08/2026 08:42 UTC au 15/08/2026 17:54 UTC, soit **11,38 jours** et **26 exécutions** du
-workflow CI sur `main` - 15 déclenchées par un push, 11 par le cron nightly, **0 par une pull request**. Le brief
-demandait au moins 3 exécutions ; l'échantillon reste néanmoins petit, ce qui est signalé dans chaque interprétation.
+workflow CI sur `main` - 15 déclenchées par un push, dont **6 par la fusion d'une pull request**, et 11 par le cron
+nightly. Le brief demandait au moins 3 exécutions ; l'échantillon reste néanmoins petit, ce qui est signalé dans chaque
+interprétation.
+
+**Ce que cette période ne montre pas : les pull requests elles-mêmes.** Un run déclenché par une pull request s'exécute
+sur la **branche source**, jamais sur `main` : le filtre de branche l'écarte donc par construction, et compter les runs
+`event: pull_request` ici donnerait toujours zéro - un chiffre qui décrirait la mesure, pas le dépôt. Hors de cette
+fenêtre, le dépôt compte **20 pull requests** (6 fusionnées, 12 ouvertes, 2 fermées sans fusion) et **40 exécutions du
+pipeline déclenchées par une PR**. La voie des pull requests est donc bien empruntée - par Dependabot exclusivement, ce
+qui reste le point critique n° 2 du [§ 6.3](#63-analyse-synthétique-du-monitoring). Ces 40 runs ont d'abord échoué en série (25 rouges les 1er, 3 et 4 août,
+sur le jeton SonarCloud indisponible aux exécutions Dependabot, [§ 4.2](#42-fréquence-dexécution)) puis sont **verts sans exception depuis le
+8 août**.
 
 **Deux propriétés de la mesure, à énoncer sous peine de rendre les chiffres incomparables.** D'abord la fenêtre
 **glisse** : l'API Actions ne renvoie que les 100 derniers runs du dépôt, si bien que la première campagne
@@ -531,12 +541,16 @@ par le smoke test conteneurisé.
    repassés au vert en 17 min et 2,4 h - mais **rien n'a été instrumenté depuis** : c'est une amélioration de fait, due
    à un rythme de travail plus soutenu, pas une garantie. *Correction proposée* : une étape de notification
    conditionnée à l'échec d'un run planifié (issue GitHub automatique, ou courriel/Slack).
-2. **La voie des pull requests n'a jamais été empruntée** - 15 pushes directs, **0 PR** sur la seconde campagne comme
-   sur la première : les garde-fous les plus coûteux (quality gate, smoke test, Trivy avant fusion) ne protègent rien
-   tant que tout arrive directement sur `main`. C'était la cause directe du taux d'échec de 46 % en juillet ; ce n'est
-   plus ce qui explique les 13,3 % d'août, désormais d'origine purement infrastructurelle - mais le risque, lui, n'a
-   pas bougé d'un pouce : il n'est plus masqué par des défauts, il est simplement inexercé. *Correction proposée* :
-   activer la protection de branche (checks requis + branche à jour) et passer par des branches courtes.
+2. **Aucun changement humain n'est passé par une pull request** - la voie PR existe et fonctionne, mais **seul
+   Dependabot l'emprunte** : sur les 15 pushes de la période, 6 viennent de la fusion d'une PR du robot, et les 9
+   autres - les miens - sont allés droit sur `main`. Les 20 PR du dépôt sont **toutes** de Dependabot, aucune n'a été
+   ouverte par un humain. Conséquence : les garde-fous les plus coûteux (quality gate, smoke test, Trivy *avant*
+   fusion) tournent bien, 40 fois, mais **uniquement sur des montées de dépendances** - jamais sur le code que
+   j'écris. C'était la cause directe du taux d'échec de 46 % en juillet ; ce n'est plus ce qui explique les 13,3 %
+   d'août, d'origine purement infrastructurelle - mais le risque n'a pas bougé d'un pouce, il n'est plus masqué par
+   des défauts, il est simplement **inexercé là où il compte**. Rien ne l'empêche non plus : la protection de branche
+   n'est toujours pas activée. *Correction proposée* : l'activer (checks requis + branche à jour) et passer par des
+   branches courtes, y compris pour mon propre travail.
 3. **Deux classes d'erreurs évitables en local** - #6/#8/#9 (conteneurs) et #16 (lockfile désynchronisé) auraient été
    détectés avant push par un `docker compose up --wait` et un `npm ci` locaux. *Correction proposée* : documenter
    cette vérification, voire un hook de pré-push.
@@ -904,7 +918,10 @@ Un script shell complète l'ensemble : `docker-entrypoint.sh` (image du serveur)
 démarrer l'API - un conteneur neuf part d'un volume vide. Le healthcheck du service `backup` appelle directement
 `node dist/scripts/backup.js --health` ([§ 7.3](#73-procédure-de-restauration)).
 
-**Exploitation** - démarrage de l'ensemble : `./run.sh` (stack applicative, stack ELK, métriques et dashboards).
+**Exploitation** - la séquence de démarrage complète (stack applicative, puis ELK, puis métriques et dashboards) est
+donnée dans le README. Deux contraintes d'ordre y sont expliquées plutôt qu'enfouies dans un script : la stack
+applicative crée le réseau `orion` que le compose ELK déclare `external`, et `server`/`backup` doivent être redémarrés
+une fois Logstash à l'écoute, leur transport de journalisation ne se connectant qu'au démarrage du processus.
 
 | Besoin | Commande |
 |---|---|

@@ -1,0 +1,11 @@
+# Fins de ligne des scripts de démarrage, imposées quel que soit le poste.
+#
+# Sans cette règle, un `.bat` rédigé sous Windows est stocké en LF (conversion
+# au commit) et cmd.exe le relit de travers ; un `.sh` récupéré depuis Windows
+# arrive en CRLF et son shebang casse (« bad interpreter: /bin/bash^M »).
+#
+# Volontairement limité à ces extensions : pas de `* text=auto`, qui imposerait
+# de renormaliser tout le dépôt (un commit touchant chaque fichier texte).
+*.sh  text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
