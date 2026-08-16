@@ -669,11 +669,19 @@ heure de saisie d'un CRM interne est acceptable.
 
 ### 7.3 Procédure de restauration
 
-**Action automatisée de vérification** - `npm run backup:verify` (ou `node dist/scripts/restore.js --verify`)
-effectue une **restauration à blanc** : il copie le dernier instantané dans un emplacement temporaire, l'ouvre,
-contrôle son intégrité et compte les enregistrements, puis le supprime - sans jamais toucher à la base en service.
-C'est ce contrôle qui distingue une sauvegarde d'une simple intention de sauvegarde. Le service `backup` l'exécute
-automatiquement une fois par jour ; il est aussi lançable à la demande.
+**Action automatisée de vérification** - une **restauration à blanc** : le dernier instantané est copié dans un
+emplacement temporaire, ouvert, contrôlé (intégrité *et* comptage des enregistrements), puis supprimé - sans jamais
+toucher à la base en service. C'est ce contrôle qui distingue une sauvegarde d'une simple intention de sauvegarde. Le
+service `backup` l'exécute automatiquement une fois par jour ; il est aussi lançable à la demande.
+
+**Où le lancer** - deux contextes, qui ne sont **pas** interchangeables :
+
+| Contexte | Commande | Pourquoi celle-là |
+|---|---|---|
+| **Stack Docker en marche** (cas normal) | `docker compose exec backup node dist/scripts/restore.js --verify` | `npm` et `tsx` sont **absents de l'image de production** - retirés pour réduire la surface d'attaque ([§ 5.2](#52-analyse-des-risques)) : seul le JavaScript compilé y est exécutable. Le conteneur `backup` monte déjà le volume de données et `./backups`. |
+| **Poste de développement, hors Docker** | depuis `server/` : `npm run backup:verify -- --from ../backups/<instantané>.db` | Le script npm existe dans `server/package.json` : il faut donc être **dans `server/`**. Et `BACKUP_DIR` vaut `backups` **relatif au répertoire courant**, soit `server/backups`, qui n'existe pas - d'où le `--from` explicite, qui court-circuite la variable et fonctionne dans n'importe quel shell. |
+
+Le conteneur n'a pas besoin de `--from` : le compose y fixe déjà `BACKUP_DIR=/app/backups`.
 
 **Que se passe-t-il si le contrôle échoue ?** Un échec inaperçu ne vaudrait pas mieux que pas de contrôle ([§ 6.3](#63-analyse-synthétique-du-monitoring)).
 Il est signalé **à trois niveaux** :
@@ -711,13 +719,19 @@ service, choix de l'instantané, redémarrage, vérification applicative). C'est
 **Scénario d'incident : suppression accidentelle de données** (le plus probable - un `down -v` de trop, une
 suppression en masse, une migration fautive). Étapes :
 
-1. **Arrêter l'application** (`docker compose stop server`) - sinon le serveur écrit pendant le remplacement ;
-2. **Choisir l'instantané** (`ls backups/`, nommage horodaté) ;
-3. **Vérifier avant d'agir** : `npm run backup:verify` confirme la restaurabilité et affiche les volumes contenus ;
-4. **Restaurer** : `node dist/scripts/restore.js --yes` (`--from` pour un point précis). Le script copie l'état
+Les quatre commandes se lancent **depuis la racine du dépôt**, la stack tournant toujours : on arrête `server`, mais le
+conteneur `backup` reste debout et sert d'accès à la base - il monte le même volume, et c'est lui qui embarque les
+scripts compilés.
+
+1. **Arrêter l'application** : `docker compose stop server` - sinon le serveur écrit pendant le remplacement ;
+2. **Choisir l'instantané** : `ls backups/` (nommage horodaté) ;
+3. **Vérifier avant d'agir** : `docker compose exec backup node dist/scripts/restore.js --verify` confirme la
+   restaurabilité et affiche les volumes contenus ;
+4. **Restaurer** : `docker compose exec backup node dist/scripts/restore.js --yes` (ajouter
+   `--from /app/backups/<instantané>.db` pour un point précis - chemin **vu du conteneur**). Le script copie l'état
    courant sous `pre-restore-*` (restauration réversible) et supprime les `-wal`/`-shm` résiduels, faute de quoi
    SQLite rejouerait l'ancien journal par-dessus la base restaurée ;
-5. **Redémarrer et contrôler** (`docker compose start server`, `/api/health`).
+5. **Redémarrer et contrôler** : `docker compose start server`, puis `/api/health`.
 
 Sans `--yes`, la commande refuse : une action destructive n'est jamais le comportement par défaut.
 
@@ -909,7 +923,7 @@ lance en local.
 | Module | Scripts | Rôle |
 |---|---|---|
 | `server/` | `lint`, `typecheck`, `test:coverage`, `build`, `prisma:generate` | Jobs `server` et `release` (build des artefacts) |
-| `server/` | `backup`, `backup:verify`, `restore` | Hors pipeline : sauvegardes ([§ 7](#7-plan-de-sauvegarde-des-données)), exécutés par le service `backup` |
+| `server/` | `backup`, `backup:verify`, `restore` | Hors pipeline : sauvegardes ([§ 7](#7-plan-de-sauvegarde-des-données)). Ces scripts npm sont les points d'entrée **du poste de développement** ; dans l'image de production, dépourvue de `npm` et de `tsx`, les mêmes actions passent par `node dist/scripts/…` ([§ 7.3](#73-procédure-de-restauration)) |
 | `client/` | `lint`, `typecheck`, `test:coverage`, `build` | Jobs `client` et `release` |
 | racine | `release` (semantic-release) | Job `release` ([§ 8.2](#82-mise-à-jour-du-pipeline-cicd)) |
 | `tools/` | `dora`, `dora:index`, `kibana:setup`/`import`/`export` | Hors pipeline : métriques DORA et dashboards ([§ 6](#6-monitoring-métriques--kpi)) |
@@ -923,12 +937,17 @@ donnée dans le README. Deux contraintes d'ordre y sont expliquées plutôt qu'e
 applicative crée le réseau `orion` que le compose ELK déclare `external`, et `server`/`backup` doivent être redémarrés
 une fois Logstash à l'écoute, leur transport de journalisation ne se connectant qu'au démarrage du processus.
 
+Les commandes ci-dessous se lancent **depuis la racine du dépôt**. Elles passent toutes par `node dist/scripts/…` et
+non par les scripts npm : l'image de production n'embarque ni `npm` ni `tsx` ([§ 5.2](#52-analyse-des-risques)). Le conteneur ciblé par
+`exec` suit une règle simple - `server` tant que l'application doit tourner, `backup` dès qu'elle doit être arrêtée,
+les deux montant le même volume de données.
+
 | Besoin | Commande |
 |---|---|
 | Sauvegarde à la demande, stack en marche | `docker compose exec -T server node dist/scripts/backup.js` |
 | Sauvegarde stack arrêtée (avant migration risquée) | `docker run --rm --entrypoint node -v orion-db:/app/data -v "$PWD/backups":/app/backups ghcr.io/…-server:latest dist/scripts/backup.js` - `--entrypoint` indispensable, sinon l'image démarre l'API |
-| Contrôle de restaurabilité ([§ 7.3](#73-procédure-de-restauration)) | `docker compose exec -T server node dist/scripts/restore.js --verify` |
-| Restauration | `node dist/scripts/restore.js --yes` (`--from <instantané>` pour un point précis) |
+| Contrôle de restaurabilité ([§ 7.3](#73-procédure-de-restauration)) | `docker compose exec -T backup node dist/scripts/restore.js --verify` |
+| Restauration ([§ 7.3](#73-procédure-de-restauration)) | `docker compose stop server` puis `docker compose exec -T backup node dist/scripts/restore.js --yes` - via `backup` et non `server`, qui doit être arrêté pendant l'opération. `--from /app/backups/<instantané>.db` pour un point précis |
 | Miroir du dépôt | `git push --mirror <second-hébergeur>` |
 | Archive froide du dépôt | `git bundle create orion-$(date +%F).bundle --all` |
 | Métriques DORA (rapport) | `npm run dora` depuis `tools/` |
