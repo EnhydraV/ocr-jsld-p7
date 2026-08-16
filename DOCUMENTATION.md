@@ -413,8 +413,18 @@ définition de « déploiement » serait enfouie dans une configuration au lieu 
 
 **Dashboards décrits en code, donc reproductibles** - un dashboard cliqué disparaît avec le poste qui l'héberge. Les
 **quatre** dashboards (« Pipeline CI/CD - DORA », « Logs applicatifs », « Sauvegardes » [§ 7.3](#73-procédure-de-restauration), « Vulnérabilités »
-[§ 8](#8-plan-de-mise-à-jour)) sont définis en code dans `tools/kibana/` et créés avec leurs trois data views par `npm run kibana:setup`
-(rejouable ; `kibana:export`/`import` couvrent l'aller-retour avec l'interface, le code restant la référence). Les
+[§ 8](#8-plan-de-mise-à-jour)) sont définis en code dans `tools/kibana/` et créés par `npm run kibana:setup` (rejouable ;
+`kibana:export`/`import` couvrent l'aller-retour avec l'interface, le code restant la référence). Quatre dashboards
+pour trois data views, chacune correspondant à une nature de données :
+
+| Dashboard | Data view | Alimentation |
+|---|---|---|
+| Pipeline CI/CD - DORA | `orion-pipeline-metrics` | projection de l'API GitHub Actions (`dora:index`, en *pull*) |
+| Logs applicatifs | `orion-logs-*` | Winston + Morgan → Logstash, en continu (*push*) |
+| Sauvegardes ([§ 7.3](#73-procédure-de-restauration)) | `orion-logs-*` | même flux : les événements de sauvegarde sont émis par le logger de l'application ([§ 7.2](#72-procédure-de-sauvegarde)) |
+| Vulnérabilités ([§ 8](#8-plan-de-mise-à-jour)) | `orion-vulnerabilities` | projection de l'API GitHub (`deps:index`, en *pull*) |
+
+Les
 contraintes de l'API Kibana découvertes à l'exécution sont consignées dans le code et verrouillées par les 62 tests
 de `tools/`.
 `npm run dora:index` projette l'historique dans l'index `orion-pipeline-metrics` (ids stables, réexécution
