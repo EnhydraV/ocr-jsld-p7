@@ -52,7 +52,8 @@ mise à jour (Partie 2).
 
 **Objectifs de l'industrialisation.** Quatre fils conducteurs traversent ce document :
 
-- **aucune livraison non validée** - ce qui transforme 46 % de changements défectueux en zéro défaut livré ([§ 6.1](#61-métriques-dora)) ;
+- **aucune livraison non validée** - ce qui, sur les deux campagnes de mesure, transforme 46,2 puis 13,3 % de runs
+  défectueux en zéro défaut livré ([§ 6.1](#61-métriques-dora)) ;
 - **tout est reproductible et versionné** - scripts identiques local/CI, lockfiles, SHA, digests, dashboards et
   calendriers en code ([§ 2.3](#23-reproductibilité), [§ 8](#8-plan-de-mise-à-jour)) ;
 - **ce qui échoue doit se voir** - logs structurés, métriques mesurées, dashboards, chasse aux échecs silencieux
@@ -414,14 +415,30 @@ définition de « déploiement » serait enfouie dans une configuration au lieu 
 **quatre** dashboards (« Pipeline CI/CD - DORA », « Logs applicatifs », « Sauvegardes » [§ 7.3](#73-procédure-de-restauration), « Vulnérabilités »
 [§ 8](#8-plan-de-mise-à-jour)) sont définis en code dans `tools/kibana/` et créés avec leurs trois data views par `npm run kibana:setup`
 (rejouable ; `kibana:export`/`import` couvrent l'aller-retour avec l'interface, le code restant la référence). Les
-contraintes de l'API Kibana découvertes à l'exécution sont consignées dans le code et verrouillées par 55 tests.
+contraintes de l'API Kibana découvertes à l'exécution sont consignées dans le code et verrouillées par les 62 tests
+de `tools/`.
 `npm run dora:index` projette l'historique dans l'index `orion-pipeline-metrics` (ids stables, réexécution
 idempotente) ; Kibana dérive les indicateurs par agrégation, dans un index **distinct** des logs applicatifs. La
 collecte est locale : la stack ELK n'est pas exposée, un job de CI ne peut pas l'alimenter (consigne du brief).
 
-**Période observée** : du 23/07/2026 13:21 UTC au 27/07/2026 18:27 UTC, soit **4,21 jours** et **17 exécutions** sur
-`main` - 13 déclenchées par un push, 4 par le cron nightly, **0 par une pull request**. Le brief demandait au moins 3
-exécutions ; l'échantillon reste néanmoins petit, ce qui est signalé dans chaque interprétation.
+Le dashboard « Pipeline CI/CD » ouvre sur les **quatre** métriques DORA dans leur ordre canonique. Le taux d'échec y
+est obtenu sans calcul pré-stocké : chaque run porte un indicateur 0/1, et la **moyenne** de cet indicateur *est* le
+taux - une agrégation simple, dont on vérifie qu'elle redonne exactement la valeur du rapport texte. Chaque panneau
+porte enfin une **aide contextuelle** (icône d'information de son en-tête) rappelant ce qui est mesuré et sur quel
+périmètre : un dashboard se lit souvent sans la documentation à côté, et une tuile muette se lit de travers.
+
+**Période observée** : du 04/08/2026 08:42 UTC au 15/08/2026 17:54 UTC, soit **11,38 jours** et **26 exécutions** du
+workflow CI sur `main` - 15 déclenchées par un push, 11 par le cron nightly, **0 par une pull request**. Le brief
+demandait au moins 3 exécutions ; l'échantillon reste néanmoins petit, ce qui est signalé dans chaque interprétation.
+
+**Deux propriétés de la mesure, à énoncer sous peine de rendre les chiffres incomparables.** D'abord la fenêtre
+**glisse** : l'API Actions ne renvoie que les 100 derniers runs du dépôt, si bien que la première campagne
+(23-27/07, 17 runs) n'est plus atteignable par la commande et que les valeurs publiées ici sont celles du jour,
+reproductibles par `npm run dora`. L'évolution entre les deux campagnes est donnée après le tableau. Ensuite le
+**périmètre** : depuis l'activation de Dependabot, le dépôt exécute aussi des runs « Dependabot Updates » (28 sur la
+période, `event: dynamic`). Ce sont des mises à jour de dépendances par un robot, pas des changements livrés par le
+pipeline ; la mesure les écarte sur le chemin du fichier de workflow. Les compter dégradait deux indicateurs sans
+qu'aucun symptôme ne le signale - délai de premier signal à 61 s au lieu de 22, MTTR médian à 12 min au lieu de 1,4 h.
 
 **Limite fondamentale, à énoncer avant tout chiffre : ce projet n'a pas d'environnement de production**, or les
 métriques DORA parlent de code *qui tourne en production*. Les indicateurs mesurés sont donc des **proxys nommés**,
@@ -432,22 +449,37 @@ déploiement réelle et une étape `environment:` horodatée par GitHub - premi�
 
 | Métrique DORA | Ce qui est réellement mesuré | Valeur | Interprétation |
 |---|---|---|---|
-| **Lead Time for Changes** | commit → **mise à disposition** (publication d'images), et non → production | **3,6 min** (médiane sur 2 publications) | Niveau *elite* (< 1 h) pour la partie mesurée ; le pipeline n'est pas le facteur limitant. Non compté : l'installation (`docker compose pull`), manuelle. |
-| **Deployment Frequency** | fréquence de **livraison** (images prêtes à déployer) | **0,59 / jour** (2 publications en 3,37 j) | Niveau *high* rapporté à la livraison ; reflète le rythme d'un projet de formation. Complément : 7 pushes sur 13 intégralement verts = 7 versions livrables. |
-| **MTTR** | rétablissement du **pipeline** (rouge → vert), pas d'un service | moyenne **26,4 h**, médiane **17,2 h** (3 épisodes) ; **1,4 h** hors nightly | L'écart est **le** diagnostic : un échec sur push se corrige vite, l'échec nightly est resté rouge **60,4 h** (#13-#15, [§ 6.3](#63-analyse-synthétique-du-monitoring)). Niveau *low* sur le périmètre complet. |
-| **Change Failure Rate** | taux d'échec **du pipeline** (celui *au déploiement* est non mesurable sans production) | **46,2 %** (6 pushes rouges sur 13) | Près d'un changement sur deux défectueux, et **aucun livré** : `release`/`publish` conditionnés (`needs`), l'échec bloque au lieu de dégrader. |
+| **Lead Time for Changes** | commit → **mise à disposition** (publication d'images), et non → production | **3,7 min** (médiane sur 10 publications ; moyenne 3,8) | Niveau *elite* (< 1 h) pour la partie mesurée ; le pipeline n'est pas le facteur limitant. Non compté : l'installation (`docker compose pull`), manuelle. |
+| **Deployment Frequency** | fréquence de **livraison** (images prêtes à déployer) | **0,88 / jour** (10 publications en 11,38 j) | Rythme quotidien, niveau *high* rapporté à la livraison. Complément : 10 pushes sur 15 intégralement verts = 10 versions livrables. |
+| **MTTR** | rétablissement du **pipeline** (rouge → vert), pas d'un service | médiane **1,4 h**, moyenne **3,5 h** (4 épisodes) ; **7,8 h** sur les pushes seuls | L'écart s'est inversé depuis juillet : ce sont désormais les échecs **sur push** qui traînent, et pour une raison prosaïque - l'épisode long (15,4 h, #115) est une nuit, le run rouge datant de 19 h 57 heure locale. Les deux échecs nightly, eux, sont repassés au vert en 17 min et 2,4 h. |
+| **Change Failure Rate** | taux d'échec **du pipeline** (celui *au déploiement* est non mesurable sans production) | **13,3 %** (2 pushes rouges sur 15) | Divisé par 3,5 depuis juillet - et sur cette fenêtre, **aucun des deux échecs n'est un défaut du code** (voir ci-dessous). Aucun changement défectueux livré : `release`/`publish` sont conditionnés (`needs`), l'échec bloque au lieu de dégrader. |
 
-**Détail des 6 échecs sur push** (analysés au [§ 6.3](#63-analyse-synthétique-du-monitoring)) : #1-#2 = mise en service SonarCloud ; #6/#8/#9 = défauts
-détectables seulement à l'exécution des conteneurs (moteur Prisma absent, healthcheck IPv6) ; #16 = lockfile
-désynchronisé (`npm ci` refuse, échec en 20 s).
+**Détail des 2 échecs sur push - et ce qu'ils disent de la métrique.** Les deux sont des **aléas d'infrastructure
+GitHub**, pas des régressions : #115 (06/08) est sorti en échec sans qu'aucune étape ne s'exécute, GitHub n'ayant
+alloué aucune machine (« The job was not acquired by Runner of type hosted », les trois jobs `cancelled`) alors que la
+plateforme ne déclarait aucun incident ; #118 (07/08) était vert partout **sauf** `Publication GHCR`, sur un
+`ECONNRESET` pendant le téléchargement des moteurs Prisma - d'où la mise en cache des couches d'image ([§ 8.2](#82-mise-à-jour-du-pipeline-cicd)),
+qui traite la cause. Les deux autres runs rouges de la période (#111, #120) sont des **nightlies faisant leur
+travail** : audit de dépendances en échec sur des vulnérabilités réelles, donc hors CFR par construction (le taux ne
+porte que sur les pushes).
 
-**Limite de mesure : tout run rouge n'est pas une défaillance du code.** Un run peut être conclu en échec sans qu'aucune
-étape n'ait été exécutée - cas constaté le 06/08/2026, où GitHub n'a pu allouer aucune machine (« The job was not
-acquired by Runner of type hosted », jobs `cancelled`, run `failure`) alors que la plateforme ne déclarait aucun
-incident ; le même code repassait intégralement au vert quelques heures plus tard. Ces aléas d'infrastructure entrent
-donc dans le taux d'échec et dans le MTTR **au même titre qu'une régression**, ce qui les surestime tous deux. Les
-distinguer supposerait de lire les annotations de chaque job, accessibles seulement avec authentification : la
-correction est identifiée mais non implémentée, et le chiffre doit être lu avec cette réserve.
+**Limite de mesure, désormais dominante : tout run rouge n'est pas une défaillance du code.** Ces aléas entrent dans le
+taux d'échec et dans le MTTR **au même titre qu'une régression**, ce qui les surestime tous deux. Sur la fenêtre
+courante la réserve n'est plus théorique : elle absorbe la **totalité** du CFR affiché, et le taux d'échec imputable au
+code y est de **0 %**. Les distinguer automatiquement supposerait de lire les annotations de chaque job, accessibles
+seulement avec authentification : la correction est identifiée mais non implémentée, et le chiffre doit être lu avec
+cette réserve. Une réserve secondaire va dans l'autre sens : 3 pushes conclus `cancelled` (runs superposés) restent au
+dénominateur sans être ni des succès ni des échecs ; les écarter porterait le CFR à 16,7 %.
+
+**Évolution depuis la première campagne** (23-27/07, 17 runs, phase de construction du pipeline) :
+
+| | 23-27/07 | 04-15/08 | Lecture |
+|---|---|---|---|
+| Change failure rate | 46,2 % | **13,3 %** | Le pipeline est sorti de sa phase de construction : les échecs de juillet (#1-#2 mise en service SonarCloud, #6/#8/#9 défauts visibles seulement à l'exécution des conteneurs, #16 lockfile désynchronisé) ne se reproduisent plus. |
+| Lead time médian | 3,6 min | **3,7 min** | Stable malgré l'allongement du pipeline : la mesure ne dérive pas. |
+| Publications | 2 (0,59 / j) | **10 (0,88 / j)** | Le rythme de livraison a suivi celui du travail. |
+| Premier signal d'échec | 67 s | **22 s** | Amélioration réelle, mais à lire avec prudence : une part vient de l'exclusion des runs Dependabot. |
+| MTTR nightly | 60,4 h (#13-#15) | **17 min et 2,4 h** | Le point critique n° 1 du [§ 6.3](#63-analyse-synthétique-du-monitoring) ne s'est pas reproduit - sans qu'aucune notification n'ait pourtant été mise en place : rien ne garantit que ça tienne. |
 
 ### 6.2 KPI personnalisés
 
@@ -457,38 +489,44 @@ KPI **pipeline** (issus de GitHub Actions, ci-dessous) et les KPI **applicatifs*
 
 | KPI | Valeur mesurée | Pourquoi ce KPI | Seuil d'alerte proposé |
 |---|---|---|---|
-| **Durée d'un pipeline vert** | médiane **107 s** (86-232 s) | Délai de feedback : trop long, on contourne la CI | > 5 min |
-| **Temps avant le premier signal d'échec** | médiane **67 s** (12-117 s) | Qualité du *fail-fast* : signaler tôt, pas seulement signaler | > 3 min |
-| **Durée des jobs de test** | back **24 s**, front **23 s** (médianes) | Poste de coût principal quand la suite grossit ; stable = marge | > 2 min |
-| **Taux de réussite des runs** | **41,2 %** global, **53,8 %** sur push | Santé du pipeline ; faible en phase de construction (#1-#9), assumé | < 80 % sur 20 runs |
+| **Durée d'un pipeline vert** | médiane **219 s** (160-264 s) | Délai de feedback : trop long, on contourne la CI | > 5 min |
+| **Temps avant le premier signal d'échec** | médiane **22 s** (10-166 s, sur 3 échecs) | Qualité du *fail-fast* : signaler tôt, pas seulement signaler | > 3 min |
+| **Durée des jobs de test** | back **28 s**, front **24 s** (médianes) | Poste de coût principal quand la suite grossit ; stable = marge | > 2 min |
+| **Taux de réussite des runs** | **73,1 %** global, **66,7 %** sur push | Santé du pipeline ; les 41,2 % de juillet tenaient à sa construction | < 80 % sur 20 runs |
 | **Couverture de tests** | **89,2 %** (back, Vitest), seuil bloquant 80 % sur le métier | Condition de la détection de régressions et de la quality gate ([§ 5](#5-plan-de-sécurité)) | < 80 % = build rouge (déjà bloquant) |
 | **Taux de réponses en erreur** (applicatif) | non significatif (trafic de démonstration) | Seule mesure de dégradation **vue par l'utilisateur**, invisible dans Actions | > 1 % de 5xx sur 1 h |
 
-Décomposition d'un pipeline vert (médianes) : tests back/front 24/23 s en parallèle, Sonar 66 s, images + smoke test
-+ Trivy 92 s, release 34 s, publication 73 s. La durée totale a triplé (86 → 232 s) au fil des ajouts : coût assumé
-de la couverture, loin du seuil de 5 min.
+Décomposition d'un pipeline vert (médianes) : tests back/front 28/24 s en parallèle, Sonar 65 s, images + smoke test
++ Trivy 85 s, release 32 s, publication 64 s. La durée totale a doublé depuis juillet (107 → 219 s) au fil des ajouts :
+coût assumé de la couverture, encore à moins de la moitié du seuil de 5 min.
 
 ### 6.3 Analyse synthétique du monitoring
 
-**Tendances** - Le pipeline s'est stabilisé (échecs concentrés sur sa construction, #1-#9 ; un seul échec sur les 5
-derniers pushes, vite corrigé) ; sa durée a triplé (86 → 232 s) sans approcher un seuil gênant ; aucun changement
-défectueux livré.
+**Tendances** - Le pipeline est sorti de sa phase de construction : le taux d'échec est passé de 46,2 % à **13,3 %**
+entre les deux campagnes, et les deux seuls échecs restants sont des aléas de l'infrastructure GitHub, pas des
+régressions ([§ 6.1](#61-métriques-dora)). Sa durée a doublé (107 → 219 s) sans approcher un seuil gênant. Aucun changement défectueux
+livré sur l'ensemble des deux périodes.
 
-**Points forts** - Lead time *elite* jusqu'à la mise à disposition (3,6 min) ; conditionnement effectif de la
-livraison (un échec bloque au lieu de livrer) ; fail-fast réel (12 s au #16) ; détection de défauts invisibles aux
-tests unitaires (moteur Prisma absent, healthcheck IPv6) par le smoke test conteneurisé.
+**Points forts** - Lead time *elite* jusqu'à la mise à disposition (3,7 min), **stable** alors que le pipeline s'est
+allongé ; conditionnement effectif de la livraison (un échec bloque au lieu de livrer) ; fail-fast réel (10 s sur le
+plus rapide des échecs) ; détection de défauts invisibles aux tests unitaires (moteur Prisma absent, healthcheck IPv6)
+par le smoke test conteneurisé.
 
 **Points critiques identifiés** (anomalies relevées dans les métriques et les journaux d'exécution) :
 
-1. **Les échecs nightly ne sont vus par personne** - trois exécutions planifiées consécutives (#13-#15) sont restées
-   rouges **60,4 h** sur un audit de dépendances en échec (13 vulnérabilités *high* corrigeables), le correctif
+1. **Les échecs nightly ne sont vus par personne** - trois exécutions planifiées consécutives (#13-#15, juillet) sont
+   restées rouges **60,4 h** sur un audit de dépendances en échec (13 vulnérabilités *high* corrigeables), le correctif
    n'arrivant que par hasard d'un autre travail. C'est **le point critique principal** : sans notification dédiée, le
-   nightly produit un faux sentiment de sécurité. *Correction proposée* : une étape de notification conditionnée à
-   l'échec d'un run planifié (issue GitHub automatique, ou courriel/Slack).
-2. **La voie des pull requests n'a jamais été empruntée** - 13 pushes directs, **0 PR** : les garde-fous les plus
-   coûteux (quality gate, smoke test, Trivy avant fusion) ne protègent rien tant que tout arrive directement sur
-   `main` - cause directe du taux d'échec de 46 %. *Correction proposée* : activer la protection de branche (checks
-   requis + branche à jour) et passer par des branches courtes.
+   nightly produit un faux sentiment de sécurité. Sur la seconde campagne, les deux échecs nightly (#111, #120) sont
+   repassés au vert en 17 min et 2,4 h - mais **rien n'a été instrumenté depuis** : c'est une amélioration de fait, due
+   à un rythme de travail plus soutenu, pas une garantie. *Correction proposée* : une étape de notification
+   conditionnée à l'échec d'un run planifié (issue GitHub automatique, ou courriel/Slack).
+2. **La voie des pull requests n'a jamais été empruntée** - 15 pushes directs, **0 PR** sur la seconde campagne comme
+   sur la première : les garde-fous les plus coûteux (quality gate, smoke test, Trivy avant fusion) ne protègent rien
+   tant que tout arrive directement sur `main`. C'était la cause directe du taux d'échec de 46 % en juillet ; ce n'est
+   plus ce qui explique les 13,3 % d'août, désormais d'origine purement infrastructurelle - mais le risque, lui, n'a
+   pas bougé d'un pouce : il n'est plus masqué par des défauts, il est simplement inexercé. *Correction proposée* :
+   activer la protection de branche (checks requis + branche à jour) et passer par des branches courtes.
 3. **Deux classes d'erreurs évitables en local** - #6/#8/#9 (conteneurs) et #16 (lockfile désynchronisé) auraient été
    détectés avant push par un `docker compose up --wait` et un `npm ci` locaux. *Correction proposée* : documenter
    cette vérification, voire un hook de pré-push.
@@ -810,16 +848,18 @@ chaîne d'approvisionnement, le monitoring a ses quatre dashboards définis en c
 
 **Gains observés** - mesurés sur le pipeline réel ([§ 6](#6-monitoring-métriques--kpi)), pas déclarés :
 
-- **Fiabilité** : 46,2 % des changements poussés étaient défectueux… et **aucun n'a été livré** - l'échec bloque au
-  lieu de dégrader. La valeur du pipeline se lit dans ce qu'il a arrêté : dont trois défauts d'exécution du service
-  de sauvegarde ([§ 7.2](#72-procédure-de-sauvegarde)), invisibles à tout test unitaire, interceptés par le smoke test.
-- **Rapidité** : lead time médian commit → images de **3,6 min** (*elite* sur le périmètre mesuré) ; premier signal
-  d'échec à **67 s** - l'erreur coûte une minute, pas une attente.
+- **Fiabilité** : 46,2 % des changements poussés étaient défectueux en juillet, **13,3 % en août**… et **aucun n'a été
+  livré** sur l'une ou l'autre période - l'échec bloque au lieu de dégrader. La valeur du pipeline se lit dans ce qu'il
+  a arrêté : dont trois défauts d'exécution du service de sauvegarde ([§ 7.2](#72-procédure-de-sauvegarde)), invisibles à tout test unitaire,
+  interceptés par le smoke test.
+- **Rapidité** : lead time médian commit → images de **3,7 min** (*elite* sur le périmètre mesuré), inchangé d'une
+  campagne à l'autre alors que le pipeline a doublé de durée ; premier signal d'échec à **22 s** - l'erreur coûte une
+  demi-minute, pas une attente.
 - **Qualité** : d'une couverture nulle à **≥ 80 %** bloquant, analyse SonarQube sur chaque PR, versionnement SemVer
   porté par les messages de commit.
 
-**Ce que les métriques ont appris** dépasse les chiffres : l'écart entre le MTTR des pushes (1,4 h) et le nightly
-resté rouge 60,4 h ([§ 6.3](#63-analyse-synthétique-du-monitoring)) a donné son fil rouge au document - *un signal que personne ne regarde ne protège rien* -
+**Ce que les métriques ont appris** dépasse les chiffres : l'écart entre le MTTR des pushes et le nightly resté rouge
+60,4 h en juillet ([§ 6.3](#63-analyse-synthétique-du-monitoring)) a donné son fil rouge au document - *un signal que personne ne regarde ne protège rien* -
 et ses choix : healthchecks, compteurs à zéro, PR plutôt que notifications, index rafraîchis automatiquement.
 
 **Recommandations pour les itérations suivantes**, par ordre de priorité :
