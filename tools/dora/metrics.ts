@@ -89,6 +89,18 @@ function jobStatistics(entries: RunWithJobs[]): JobStat[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Un push produit par la fusion d'une pull request. GitHub titre ces commits
+ * « Merge pull request #N from … » ; c'est le seul marqueur disponible depuis
+ * les données d'un run, et il suffit à distinguer ce qui est passé par une
+ * relecture de ce qui a été poussé droit sur la branche de livraison.
+ * Limite assumée : une fusion en squash ou en rebase perd ce titre et sera
+ * comptée comme un push direct.
+ */
+export function isMergedPullRequest(entry: RunWithJobs): boolean {
+  return /^Merge pull request #\d+/.test(entry.run.display_title);
+}
+
 export function computeMetrics(entries: RunWithJobs[]): Metrics {
   if (entries.length === 0) throw new Error('Aucune exécution à analyser');
 
@@ -118,7 +130,7 @@ export function computeMetrics(entries: RunWithJobs[]): Metrics {
     runCount: entries.length,
     pushCount: pushEntries.length,
     scheduleCount: entries.filter((entry) => entry.run.event === 'schedule').length,
-    pullRequestCount: entries.filter((entry) => entry.run.event === 'pull_request').length,
+    mergedPullRequestCount: pushEntries.filter(isMergedPullRequest).length,
     publications,
     publicationWindowDays,
     publicationsPerDay: publicationWindowDays > 0 ? publications.length / publicationWindowDays : null,

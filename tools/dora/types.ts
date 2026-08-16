@@ -65,7 +65,14 @@ export interface Metrics {
   runCount: number;
   pushCount: number;
   scheduleCount: number;
-  pullRequestCount: number;
+  /**
+   * Pushes issus d'une fusion de pull request, parmi `pushCount`. On NE compte
+   * PAS les runs `event: pull_request` : ils s'exécutent sur la branche source,
+   * jamais sur la branche de livraison, donc le filtre de branche les écarte
+   * par construction et le total vaudrait toujours zéro — un « 0 pull request »
+   * qui décrirait la mesure et non le dépôt.
+   */
+  mergedPullRequestCount: number;
   publications: Publication[];
   publicationWindowDays: number;
   publicationsPerDay: number | null;

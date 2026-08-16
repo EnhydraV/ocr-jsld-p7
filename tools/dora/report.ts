@@ -30,8 +30,13 @@ export function buildReport(metrics: Metrics, repo: string, workflowPath = ''): 
     // savoir que les runs « Dependabot Updates » sont écartés.
     ...(workflowPath ? [`Workflow mesuré : ${workflowPath}`, ''] : []),
     `Période : ${metrics.periodStart} → ${metrics.periodEnd} (${metrics.windowDays.toFixed(2)} jours) · ` +
-      `${metrics.runCount} runs sur main (${metrics.pushCount} push, ${metrics.scheduleCount} nightly, ` +
-      `${metrics.pullRequestCount} pull request)`,
+      `${metrics.runCount} runs sur main (${metrics.pushCount} push dont ` +
+      `${metrics.mergedPullRequestCount} par fusion de pull request, ${metrics.scheduleCount} nightly)`,
+    '',
+    // Les runs `event: pull_request` s'exécutent sur la branche source : ils
+    // n'apparaissent pas ici, et ne pas le dire ferait lire « aucune PR ».
+    'Les runs déclenchés PAR une pull request ne sont pas comptés : ils tournent sur la branche',
+    'source, pas sur la branche de livraison mesurée ici.',
     '',
     '## 1. Deployment Frequency — mesurée comme fréquence de LIVRAISON',
     '   (proxy assumé : aucun environnement de production, cf. § 6.1)',

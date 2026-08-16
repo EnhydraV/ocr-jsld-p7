@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { computeMetrics, findPublications, firstFailureSignalSeconds, recoveryEpisodes } from './metrics.js';
+import {
+  computeMetrics,
+  findPublications,
+  firstFailureSignalSeconds,
+  isMergedPullRequest,
+  recoveryEpisodes,
+} from './metrics.js';
 import type { RunWithJobs, WorkflowJob, WorkflowRun } from './types.js';
 
 interface RunOptions {
@@ -7,6 +13,7 @@ interface RunOptions {
   conclusion: string | null;
   event?: string;
   path?: string;
+  title?: string;
   startedAt: string;
   updatedAt: string;
   committedAt?: string | null;
@@ -23,7 +30,7 @@ function buildRun(options: RunOptions): WorkflowRun {
     conclusion: options.conclusion,
     run_started_at: options.startedAt,
     updated_at: options.updatedAt,
-    display_title: `commit ${options.number}`,
+    display_title: options.title ?? `commit ${options.number}`,
     head_commit:
       options.committedAt === null ? null : { timestamp: options.committedAt ?? options.startedAt, message: 'msg' },
   };
@@ -179,7 +186,7 @@ describe('computeMetrics', () => {
     expect(metrics.runCount).toBe(3);
     expect(metrics.pushCount).toBe(2);
     expect(metrics.scheduleCount).toBe(1);
-    expect(metrics.pullRequestCount).toBe(0);
+    expect(metrics.mergedPullRequestCount).toBe(0);
   });
 
   it('computes the change failure rate on pushes only', () => {
@@ -207,5 +214,27 @@ describe('computeMetrics', () => {
 
   it('throws on an empty history rather than returning meaningless zeros', () => {
     expect(() => computeMetrics([])).toThrow();
+  });
+});
+
+describe('isMergedPullRequest', () => {
+  const entry = (title: string): RunWithJobs => ({
+    run: buildRun({ number: 1, conclusion: 'success', startedAt: '2026-08-04T08:00:00Z', updatedAt: '2026-08-04T08:03:00Z', title }),
+    jobs: [],
+  });
+
+  it('recognises the merge commit GitHub writes when a pull request is merged', () => {
+    expect(isMergedPullRequest(entry('Merge pull request #20 from EnhydraV/dependabot/npm_and_yarn/tools'))).toBe(true);
+  });
+
+  // Sans le numéro, c'est une fusion de branche ordinaire : la confondre avec
+  // une PR gonflerait la part des changements passés par une relecture.
+  it('does not mistake an ordinary branch merge for a pull request', () => {
+    expect(isMergedPullRequest(entry("Merge remote-tracking branch 'origin/main'"))).toBe(false);
+    expect(isMergedPullRequest(entry('Merge pull request from a fork'))).toBe(false);
+  });
+
+  it('treats a plain commit as a direct push', () => {
+    expect(isMergedPullRequest(entry('docs: convert section references to links'))).toBe(false);
   });
 });
