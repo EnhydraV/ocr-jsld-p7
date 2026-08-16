@@ -7,8 +7,23 @@ import { buildDashboard, buildPanels } from './buildDashboard.js';
 describe('buildPanels', () => {
   const panels = buildPanels();
 
-  it('produces the seven panels of the dashboard', () => {
-    expect(panels).toHaveLength(7);
+  it('produces the eight panels of the dashboard', () => {
+    expect(panels).toHaveLength(8);
+  });
+
+  // Le CFR est la moyenne d'un champ 0/1 : filtrer sur `conclusion` le figerait
+  // à 100 %, puisque le dénominateur ne contiendrait plus que des échecs.
+  it('averages the failure flag over every push, not only the failed ones', () => {
+    const panel = panels.find((candidate) => candidate.id === 'orion-pipeline-cfr');
+    const state = panel?.attributes.state as {
+      query: { query: string };
+      datasourceStates: { formBased: { layers: Record<string, { columns: { metric: Record<string, unknown> } }> } };
+    };
+    const [layer] = Object.values(state.datasourceStates.formBased.layers);
+
+    expect(state.query.query).toBe('doc_type: "run" and event: "push"');
+    expect(state.query.query).not.toContain('conclusion');
+    expect(layer.columns.metric).toMatchObject({ operationType: 'average', sourceField: 'is_failure' });
   });
 
   it('gives every panel a unique id', () => {
@@ -43,6 +58,15 @@ describe('buildPanels', () => {
     }
   });
 
+  // L'infobulle est la seule explication disponible pour qui lit le dashboard
+  // sans la documentation à côté : une tuile muette se lit de travers.
+  it('documents every panel with a contextual description', () => {
+    for (const panel of panels) {
+      expect(typeof panel.attributes.description).toBe('string');
+      expect((panel.attributes.description as string).length).toBeGreaterThan(40);
+    }
+  });
+
   it('never carries kibanaSavedObjectMeta, rejected by the strict lens mapping', () => {
     for (const panel of panels) {
       expect(panel.attributes).not.toHaveProperty('kibanaSavedObjectMeta');
@@ -74,13 +98,35 @@ describe('buildDashboard', () => {
     expect(Date.parse(dashboard.attributes.timeFrom as string)).toBeLessThan(Date.parse('2026-07-23T00:00:00Z'));
   });
 
-  it('lays panels out without overlapping rows', () => {
+  it('gives every panel a slot on the grid', () => {
+    const layout = JSON.parse(dashboard.attributes.panelsJSON as string) as { gridData: unknown }[];
+
+    expect(layout).toHaveLength(panels.length);
+    for (const { gridData } of layout) expect(gridData).toBeDefined();
+  });
+
+  // Un chevauchement ne casse rien à l'import : Kibana réempile les panneaux en
+  // silence, et la disposition versionnée cesse d'être celle qui s'affiche.
+  it('lays panels out without overflowing or overlapping', () => {
     const layout = JSON.parse(dashboard.attributes.panelsJSON as string) as {
       gridData: { x: number; w: number; y: number; h: number };
     }[];
 
     for (const { gridData } of layout) {
       expect(gridData.x + gridData.w).toBeLessThanOrEqual(48);
+    }
+
+    const boxes = layout.map((panel) => panel.gridData);
+    for (const [index, box] of boxes.entries()) {
+      for (const other of boxes.slice(index + 1)) {
+        const overlaps =
+          box.x < other.x + other.w &&
+          other.x < box.x + box.w &&
+          box.y < other.y + other.h &&
+          other.y < box.y + box.h;
+
+        expect(overlaps).toBe(false);
+      }
     }
   });
 });

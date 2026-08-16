@@ -30,6 +30,13 @@ const MAPPING = {
       message: { type: 'keyword', ignore_above: 512 },
       duration_s: { type: 'float' },
       is_publication: { type: 'boolean' },
+      // 0/1 plutôt qu'un booléen : la moyenne d'un indicateur numérique EST le
+      // taux, ce qui donne le CFR avec une simple agrégation `average`, sans
+      // formule Lens. Type `long` et non `byte` : sur un index déjà créé, le
+      // champ est ajouté par le mapping dynamique d'Elasticsearch, qui déduit
+      // `long` — déclarer autre chose ferait voir un mapping périmé au run
+      // suivant et provoquerait une reconstruction inutile (cf. elastic.ts).
+      is_failure: { type: 'long' },
       lead_time_min: { type: 'float' },
       first_failure_signal_s: { type: 'float' },
       job_name: { type: 'keyword' },
@@ -66,6 +73,9 @@ export function buildDocuments(entries: RunWithJobs[], metrics: Metrics): BulkDo
         message: run.display_title,
         duration_s: durationSeconds(run.run_started_at, run.updated_at),
         is_publication: publication !== undefined,
+        // Même prédicat que `changeFailureRatePipeline` (metrics.ts) : le
+        // dashboard et le rapport texte ne peuvent pas diverger.
+        is_failure: run.conclusion === 'failure' ? 1 : 0,
         lead_time_min: publication?.leadTimeMinutes ?? null,
         first_failure_signal_s: firstFailureSignalSeconds(entry),
       },
