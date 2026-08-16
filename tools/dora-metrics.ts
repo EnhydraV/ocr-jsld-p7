@@ -8,13 +8,15 @@
  *
  * Variables d'environnement : GITHUB_TOKEN (facultatif, relève la limite de
  * 60 requêtes/h), ELASTICSEARCH_URL (défaut http://localhost:9200), DORA_REPO,
- * DORA_CACHE, PIPELINE_INDEX. Elles peuvent être posées une fois pour toutes
- * dans `tools/.env` (cf. `.env.example`) plutôt qu'exportées à chaque terminal.
+ * DORA_CACHE, PIPELINE_INDEX, DORA_WORKFLOW (chemin du workflow mesuré, défaut
+ * `.github/workflows/ci.yml` — les runs « Dependabot Updates » sont écartés).
+ * Elles peuvent être posées une fois pour toutes dans `tools/.env`
+ * (cf. `.env.example`) plutôt qu'exportées à chaque terminal.
  *
  * Les définitions retenues sont justifiées dans DOCUMENTATION.md § 6.1.
  */
 import './loadEnv.js';
-import { fetchRunsWithJobs } from './dora/github.js';
+import { DEFAULT_WORKFLOW_PATH, fetchRunsWithJobs } from './dora/github.js';
 import { computeMetrics } from './dora/metrics.js';
 import { buildReport } from './dora/report.js';
 import { buildBulkBody, buildDocuments, DEFAULT_INDEX, indexDocuments } from './dora/elastic.js';
@@ -23,6 +25,7 @@ const REPO = process.env.DORA_REPO ?? 'EnhydraV/ocr-jsld-p7';
 const CACHE_DIR = process.env.DORA_CACHE ?? '.dora-cache';
 const ELASTICSEARCH_URL = process.env.ELASTICSEARCH_URL ?? 'http://localhost:9200';
 const INDEX = process.env.PIPELINE_INDEX ?? DEFAULT_INDEX;
+const WORKFLOW_PATH = process.env.DORA_WORKFLOW ?? DEFAULT_WORKFLOW_PATH;
 
 async function main(): Promise<void> {
   const flags = new Set(process.argv.slice(2));
@@ -30,11 +33,12 @@ async function main(): Promise<void> {
     repo: REPO,
     cacheDir: CACHE_DIR,
     refresh: flags.has('--refresh'),
+    workflowPath: WORKFLOW_PATH,
   });
   const metrics = computeMetrics(entries);
 
   if (!flags.has('--index')) {
-    console.log(buildReport(metrics, REPO));
+    console.log(buildReport(metrics, REPO, WORKFLOW_PATH));
     return;
   }
 

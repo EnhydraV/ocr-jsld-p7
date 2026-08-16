@@ -6,6 +6,7 @@ interface RunOptions {
   number: number;
   conclusion: string | null;
   event?: string;
+  path?: string;
   startedAt: string;
   updatedAt: string;
   committedAt?: string | null;
@@ -18,6 +19,7 @@ function buildRun(options: RunOptions): WorkflowRun {
     event: options.event ?? 'push',
     head_branch: 'main',
     head_sha: `sha${options.number}`.padEnd(40, '0'),
+    path: options.path ?? '.github/workflows/ci.yml',
     conclusion: options.conclusion,
     run_started_at: options.startedAt,
     updated_at: options.updatedAt,

@@ -5,10 +5,28 @@ import type { RunWithJobs, WorkflowJob, WorkflowRun } from './types.js';
 
 const API = 'https://api.github.com';
 
+/**
+ * Workflow mesuré. Depuis l'activation de Dependabot, le dépôt exécute aussi
+ * des runs « Dependabot Updates » (`event: dynamic`, path
+ * `dynamic/dependabot/dependabot-updates`) : ce sont des mises à jour de
+ * dépendances par le robot, PAS des changements livrés par le pipeline. Les
+ * compter fausse le MTTR, le nombre de runs verts et le délai de premier signal
+ * (constaté : 61 s au lieu de 22 s). Cf. DOCUMENTATION.md § 6.1.
+ */
+export const DEFAULT_WORKFLOW_PATH = '.github/workflows/ci.yml';
+
 export interface FetchOptions {
   repo: string;
   cacheDir: string;
   refresh: boolean;
+  workflowPath: string;
+}
+
+/** Runs du workflow mesuré, sur la branche qui livre, du plus ancien au plus récent. */
+export function selectMeasuredRuns(runs: WorkflowRun[], workflowPath: string, branch = 'main'): WorkflowRun[] {
+  return runs
+    .filter((run) => run.head_branch === branch && run.path === workflowPath)
+    .sort((a, b) => Date.parse(a.run_started_at) - Date.parse(b.run_started_at));
 }
 
 /**
@@ -45,9 +63,7 @@ export async function fetchRunsWithJobs(options: FetchOptions): Promise<RunWithJ
     options
   );
 
-  const runs = workflow_runs
-    .filter((run) => run.head_branch === 'main')
-    .sort((a, b) => Date.parse(a.run_started_at) - Date.parse(b.run_started_at));
+  const runs = selectMeasuredRuns(workflow_runs, options.workflowPath);
 
   const result: RunWithJobs[] = [];
   for (const run of runs) {

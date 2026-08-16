@@ -7,6 +7,9 @@ export interface WorkflowRun {
   event: string;
   head_branch: string;
   head_sha: string;
+  // Chemin du fichier de workflow : sert à ne mesurer que le pipeline CI et à
+  // écarter les runs « Dependabot Updates » (cf. github.ts)
+  path: string;
   conclusion: string | null;
   run_started_at: string;
   updated_at: string;

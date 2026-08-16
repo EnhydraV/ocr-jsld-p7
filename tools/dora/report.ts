@@ -22,10 +22,13 @@ function episodeLines(label: string, episodes: Episode[]): string[] {
   return lines;
 }
 
-export function buildReport(metrics: Metrics, repo: string): string {
+export function buildReport(metrics: Metrics, repo: string, workflowPath = ''): string {
   const lines: string[] = [
     `# Métriques du pipeline — ${repo}`,
     '',
+    // Le périmètre fait partie du résultat : sans lui, un lecteur ne peut pas
+    // savoir que les runs « Dependabot Updates » sont écartés.
+    ...(workflowPath ? [`Workflow mesuré : ${workflowPath}`, ''] : []),
     `Période : ${metrics.periodStart} → ${metrics.periodEnd} (${metrics.windowDays.toFixed(2)} jours) · ` +
       `${metrics.runCount} runs sur main (${metrics.pushCount} push, ${metrics.scheduleCount} nightly, ` +
       `${metrics.pullRequestCount} pull request)`,
