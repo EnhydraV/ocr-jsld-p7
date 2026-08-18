@@ -173,7 +173,9 @@ export function buildVulnObjects(): SavedObject[] {
       sourceField: 'remediation_days',
       isBucketed: false,
       scale: 'ratio',
-      params: {},
+      // Sans format explicite, Kibana affiche trois décimales : « 0.466 jour »
+      // se lit mal pour un délai de remédiation.
+      params: { format: { id: 'number', params: { decimals: 2 } } },
     }),
     // Classées par GitHub sans intervention (dev-only) : du contexte, pas du travail
     metricPanel('orion-vulns-dismissed', 'Classées sans correctif', 'state: ("dismissed" or "auto_dismissed")'),
