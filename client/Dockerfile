@@ -17,7 +17,7 @@ COPY . .
 RUN npm run build
 
 # --- Étage final : nginx non-root (NGINX Inc., port non privilégié 8080) ---
-FROM nginxinc/nginx-unprivileged:alpine@sha256:59ccf0943b0b8e8d9e6ea9039a39555730f544701a655c596f7df7d096c593f5 AS runner
+FROM nginxinc/nginx-unprivileged:alpine@sha256:d9083fe47768377ef55dedafd67d4da7c2f2bc2bece7554954f29359deb0dce9 AS runner
 
 # Server block : statiques SPA + reverse proxy /api > server:8080
 COPY nginx.conf /etc/nginx/conf.d/default.conf
