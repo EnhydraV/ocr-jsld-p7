@@ -6,7 +6,7 @@
 # docker ne les résout pas (§ 8.1).
 
 # --- Étage builder : build Vite dans /app/dist ---
-FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS builder
+FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY . .
 RUN npm run build
 
 # --- Étage final : nginx non-root (NGINX Inc., port non privilégié 8080) ---
-FROM nginxinc/nginx-unprivileged:alpine@sha256:59ccf0943b0b8e8d9e6ea9039a39555730f544701a655c596f7df7d096c593f5 AS runner
+FROM nginxinc/nginx-unprivileged:alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e AS runner
 
 # Server block : statiques SPA + reverse proxy /api > server:8080
 COPY nginx.conf /etc/nginx/conf.d/default.conf
